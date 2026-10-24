@@ -147,7 +147,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<SKILL_DIR>/scripts/run_hel
 确认执行后，调用内置自举启动器：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "<SKILL_DIR>/scripts/run_helper.ps1" detail --patent "<公开号或patent_id>" --template "<模板编号，默认 1>" --modules "<自动匹配或用户指定的模块代码，如 A,B,C,E,F,H,I>" --extra-prompt "<用户关注点，无则留空>" --max-images 6
+powershell -NoProfile -ExecutionPolicy Bypass -File "<SKILL_DIR>/scripts/run_helper.ps1" detail --patent "<公开号或patent_id>" --template "<模板编号，默认 1>" --modules "<自动匹配或用户指定的模块代码，如 A,B,C,E,F,H,I>" --extra-prompt "<用户关注点，无则留空>" --max-images 6 --translate-job "<报告目录>/patent_detail_<公开号>_translation_job.json" --translator-label "<你当前使用的模型名称，如 Claude / GPT-5 / DeepSeek>"
 ```
 
 **拿到脚本输出的 Markdown 数据包后，必须严格执行【HTML 承载全文与图库 + 聊天框 ≤18 行极简速读卡】规范（严禁冗余输出）：**
@@ -156,12 +156,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<SKILL_DIR>/scripts/run_hel
 > 全部配对高清附图画廊（Lightbox）、独立/从属权利要求全文、说明书完整章节（以及非中文专利的逐段中外文对照）均已写入单篇 HTML 报告，**聊天框回复总字数严禁超过 300~350 字（总行数 ≤ 20 行）**！
 > - **严禁**在聊天框抄写权利要求全文或说明书长段落；
 > - **严禁**在聊天框连续贴多张附图刷屏（**聊天框内仅允许保留 1 张摘要附图或图1**，其余附图一律引导点击 HTML 画廊查看）；
-> - **🌐 非中文专利强制双语对照规则**：当脚本检测到专利为**非中文专利**（如 US/EP/WO/JP/KR 等外文专利）时，脚本会自动并发拉取 `abstract_translated`、`claim_translated`、`description_translated`，并在 HTML 报告中开启**「🔀 中外对照 / 🇨🇳 仅看中文 / 🌐 仅看原文」**一键切换视图；同时你在聊天框输出时，必须给出**中英/中外双语标题**，且在核心方案与独权特征中使用**「中文术语 (`外文原词`)」**对照格式！
+> - **🌐 非中文专利强制双语对照规则（两段式译文来源，必须严格执行）**：
+>   1. **摘要 + 权利要求 = 模型翻译（你本人翻译）**：脚本检测到非中文专利后会导出翻译任务文件（`segments` 含 `title`、`abstract`、`indep{n}`、`dep{n}`）；你必须**逐项翻译为简体中文**（权利要求使用「所述/其中/其特征在于」等中国专利惯用语，术语全篇统一），写成 JSON（键=id，值=中文译文，**必须包含 `title`**）后保存；
+>   2. **说明书 = 智慧芽机翻**：脚本已自动拉取 `description_translated`（技术领域 / 背景技术 / 发明内容 / 具体实施方式 / 附图说明），**不要**自己翻译说明书；
+>   3. 保存译文后执行 `translate-apply` 回注重建双语 HTML（离线重建，不重复请求 MCP）：
+>      `powershell -NoProfile -ExecutionPolicy Bypass -File "<SKILL_DIR>/scripts/run_helper.ps1" translate-apply --job "<job.json>" --translations "<translations.json>" --translator-label "<模型名>"`
+>   4. **译文来源必须逐处标注**：摘要/权利要求标「🇨🇳 模型译文 · <模型名>」，说明书各章节标「🇨🇳 智慧芽机翻」；HTML 顶部的来源说明行（`src-note`）由脚本自动写入，聊天回复必须按模板中的「📌 译文来源」一行如实填写；
+>   5. HTML 报告提供**「🔀 中外对照 / 🇨🇳 仅看中文 / 🌐 仅看原文」**一键切换，说明书章节按段配对；聊天框仍需给出**中外双语标题**，核心方案与独权特征用**「中文术语 (`外文原词`)」**格式；
 > - 必须严格按脚本末尾输出的**填空式模板**（区分中文专利与非中文双语专利）输出：
 
 ```markdown
 📄 **单篇精读交互看板已生成（含全部 X 幅高清附图放大画廊、完整权利要求与说明书原文 [非中文含中外双语对照切换]）**：
 👉 `<脚本输出的 HTML 报告文件名或路径>` ｜ 📥 [下载官方 PDF 全文](<PDF_URL>)
+- 📌 **译文来源**：摘要/权利要求 = <模型名> 模型翻译 ｜ 说明书 = 智慧芽机翻（中文专利省略此行）
 
 **💡 一句话看懂 `<公开号>` 《<中文专利名称>》（<若为外文专利，在此附上外文原名>）**
 - **基础信息**：🏢 <当前权利人> ｜ 📅 申请日 <YYYY-MM-DD> ｜ 状态：<🟢有效/🟡审中/⚪失效>（风险排查：<无异常/有记录>）

@@ -391,6 +391,14 @@ body[data-lang-mode="orig"] .bi-cn { display: none !important; }
 }
 .bi-tag-cn { background: #e8f3ff; color: #165dff; }
 .bi-tag-orig { background: #e5e6eb; color: #4e5969; }
+.para-pair { margin-bottom: 10px; }
+.para-pair:last-child { margin-bottom: 0; }
+.src-note {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: #86909c;
+  line-height: 1.5;
+}
 """
 
 COMMON_JS = """
@@ -436,24 +444,87 @@ function closeLightbox() {
 """
 
 
-def _render_bi_block(cn_text: str, orig_text: str, is_bilingual: bool = False) -> str:
-    """渲染中外文双语对照块（若非外文或无译文则渲染普通单语块）"""
+def _split_paragraphs(text: str) -> list:
+    """按换行切分段落并去空段（用于段落级中外对照配对）"""
+    if not text:
+        return []
+    parts = [p.strip() for p in str(text).split("\n")]
+    return [p for p in parts if p]
+
+
+def _render_bi_block(
+    cn_text: str,
+    orig_text: str,
+    is_bilingual: bool = False,
+    cn_tag: str = "🇨🇳 中文译文",
+    orig_tag: str = "🌐 外文原文",
+) -> str:
+    """渲染中外文双语对照块（若非外文或无译文则渲染普通单语块）
+
+    cn_tag 用于标注译文来源，例如「🇨🇳 模型译文 · Claude」或「🇨🇳 智慧芽机翻」。
+    当原文与译文段落数一致时，按段逐段配对（段落级对照），否则整块对照。
+    """
     orig_s = (orig_text or "").strip()
     cn_s = (cn_text or "").strip()
-    if is_bilingual and cn_s and cn_s != orig_s:
-        return (
-            f'<div class="bi-pair">'
-            f'  <div class="bi-cn">'
-            f'    <div class="bi-tag bi-tag-cn">🇨🇳 中文译文</div>'
-            f'    <div class="sec-text">{_esc(cn_s)}</div>'
-            f'  </div>'
-            f'  <div class="bi-orig">'
-            f'    <div class="bi-tag bi-tag-orig">🌐 外文原文</div>'
-            f'    <div class="sec-text">{_esc(orig_s or "暂无原文")}</div>'
-            f'  </div>'
-            f'</div>'
-        )
-    return f'<div class="sec-text">{_esc(orig_s or cn_s or "暂无内容")}</div>'
+    if not (is_bilingual and cn_s and cn_s != orig_s):
+        return f'<div class="sec-text">{_esc(orig_s or cn_s or "暂无内容")}</div>'
+
+    cn_paras = _split_paragraphs(cn_s)
+    orig_paras = _split_paragraphs(orig_s)
+    if len(orig_paras) > 1 and len(cn_paras) == len(orig_paras):
+        blocks = []
+        for c_p, o_p in zip(cn_paras, orig_paras):
+            blocks.append(
+                f'<div class="bi-pair para-pair">'
+                f'  <div class="bi-cn">'
+                f'    <div class="bi-tag bi-tag-cn">{cn_tag}</div>'
+                f'    <div class="sec-text">{_esc(c_p)}</div>'
+                f'  </div>'
+                f'  <div class="bi-orig">'
+                f'    <div class="bi-tag bi-tag-orig">{orig_tag}</div>'
+                f'    <div class="sec-text">{_esc(o_p)}</div>'
+                f'  </div>'
+                f'</div>'
+            )
+        return "".join(blocks)
+
+    return (
+        f'<div class="bi-pair">'
+        f'  <div class="bi-cn">'
+        f'    <div class="bi-tag bi-tag-cn">{cn_tag}</div>'
+        f'    <div class="sec-text">{_esc(cn_s)}</div>'
+        f'  </div>'
+        f'  <div class="bi-orig">'
+        f'    <div class="bi-tag bi-tag-orig">{orig_tag}</div>'
+        f'    <div class="sec-text">{_esc(orig_s or "暂无原文")}</div>'
+        f'  </div>'
+        f'</div>'
+    )
+
+
+def build_translation_segments(
+    pn: str,
+    title_str: str,
+    abstract_str: str,
+    parsed_clms: dict,
+) -> list:
+    """导出待模型翻译的片段（标题 / 摘要 / 独立权利要求 / 从属权利要求）
+
+    说明书部分不使用本任务，直接采用智慧芽官方机翻（description_translated）。
+    id 约定：title、abstract、indep{n}、dep{n}（整段整项，不做二次切分）。
+    """
+    segs = []
+    if title_str:
+        segs.append({"id": "title", "section": "专利标题", "text": str(title_str)})
+    if abstract_str:
+        segs.append({"id": "abstract", "section": "摘要", "text": str(abstract_str)})
+    for idx, ic in enumerate((parsed_clms or {}).get("independent") or [], 1):
+        if str(ic).strip():
+            segs.append({"id": f"indep{idx}", "section": f"独立权利要求#{idx}", "text": str(ic)})
+    for idx, dc in enumerate((parsed_clms or {}).get("dependent") or [], 1):
+        if str(dc).strip():
+            segs.append({"id": f"dep{idx}", "section": f"从属权利要求#{idx}", "text": str(dc)})
+    return segs
 
 
 def render_overview_html(
@@ -748,8 +819,15 @@ def render_detail_html(
     abstract_cn: str = "",
     parsed_clms_cn: dict = None,
     parsed_desc_cn: dict = None,
+    model_translations: dict = None,
+    translator_label: str = "Claude",
 ) -> str:
-    """生成单篇专利深度精读的单文件交互式 HTML 报告（含高清附图点击放大画廊与非中文专利中外文双语对照）"""
+    """生成单篇专利深度精读的单文件交互式 HTML 报告（含高清附图点击放大画廊与非中文专利中外文双语对照）
+
+    译文来源约定：
+    - 标题 / 摘要 / 权利要求：由大模型翻译，标签显示「🇨🇳 模型译文 · {translator_label}」
+    - 说明书各章节：直接采用智慧芽官方机翻，标签显示「🇨🇳 智慧芽机翻」
+    """
     badge_html, _ = _status_badge(simple_status)
     indep_clms = (parsed_clms or {}).get("independent") or []
     dep_clms = (parsed_clms or {}).get("dependent") or []
@@ -758,13 +836,33 @@ def render_detail_html(
     paired_figs = (parsed_desc or {}).get("paired_figures") or []
     desc_cn_map = parsed_desc_cn or {}
 
+    # 模型译文覆盖（优先级高于 MCP 返回的中文翻译）
+    mt = model_translations or {}
+    if mt.get("title"):
+        title_cn = mt["title"]
+    if mt.get("abstract"):
+        abstract_cn = mt["abstract"]
+    if mt:
+        mt_indep = [mt.get(f"indep{i}", "") for i in range(1, len(indep_clms) + 1)]
+        mt_dep = [mt.get(f"dep{i}", "") for i in range(1, len(dep_clms) + 1)]
+        if any(mt_indep) or any(mt_dep):
+            parsed_clms_cn = {"independent": mt_indep, "dependent": mt_dep}
+            indep_clms_cn = mt_indep
+            dep_clms_cn = mt_dep
+
+    # 译文来源标签
+    tag_model = f"🇨🇳 模型译文 · {translator_label}"
+    tag_cn_api = "🇨🇳 智慧芽机翻"
+    claim_tag = tag_model if mt else tag_cn_api
+    abstract_tag = tag_model if (mt.get("abstract") or mt.get("title")) else tag_cn_api
+
     # 独立权利要求（支持中外文对照）
     indep_html = []
     max_indep = max(len(indep_clms), len(indep_clms_cn)) if is_bilingual else len(indep_clms)
     for idx in range(1, max_indep + 1):
         ic_orig = indep_clms[idx - 1] if idx - 1 < len(indep_clms) else ""
         ic_cn = indep_clms_cn[idx - 1] if idx - 1 < len(indep_clms_cn) else ""
-        body_html = _render_bi_block(ic_cn, ic_orig, is_bilingual)
+        body_html = _render_bi_block(ic_cn, ic_orig, is_bilingual, cn_tag=claim_tag)
         indep_html.append(
             f'<div class="acc-item open">'
             f'  <div class="acc-header" onclick="toggleAcc(this)">'
@@ -785,7 +883,7 @@ def render_detail_html(
             dc_cn = dep_clms_cn[idx] if idx < len(dep_clms_cn) else ""
             dep_rows.append(
                 f'<div style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px dashed #e5e6eb">'
-                f'{_render_bi_block(dc_cn, dc_orig, is_bilingual)}'
+                f'{_render_bi_block(dc_cn, dc_orig, is_bilingual, cn_tag=claim_tag)}'
                 f'</div>'
             )
         dep_html = (
@@ -815,7 +913,7 @@ def render_detail_html(
         if is_bilingual and cap_cn and cap_cn != cap_orig:
             fig_cap_html = (
                 f'<div class="fig-cap">'
-                f'  <div class="bi-cn" style="padding:4px 6px;margin-bottom:4px;"><span class="bi-tag bi-tag-cn">🇨🇳 译</span> {_esc(cap_cn)}</div>'
+                f'  <div class="bi-cn" style="padding:4px 6px;margin-bottom:4px;"><span class="bi-tag bi-tag-cn">🇨🇳 机翻</span> {_esc(cap_cn)}</div>'
                 f'  <div class="bi-orig" style="padding:4px 6px;"><span class="bi-tag bi-tag-orig">🌐 原</span> {_esc(cap_orig)}</div>'
                 f'</div>'
             )
@@ -842,6 +940,7 @@ def render_detail_html(
         hero_title_html = f'<h1>{_esc(title_str)}</h1>'
         page_title = f"{pn} - {title_str}"
 
+    claim_src = f"摘要与权利要求：{translator_label} 模型翻译" if mt else "摘要与权利要求：智慧芽机翻"
     bi_switch_bar_html = ""
     if is_bilingual:
         bi_switch_bar_html = (
@@ -852,6 +951,7 @@ def render_detail_html(
             '    <button class="bi-btn" onclick="setLangMode(\'cn\',this)">🇨🇳 仅看中文</button>'
             '    <button class="bi-btn" onclick="setLangMode(\'orig\',this)">🌐 仅看原文</button>'
             '  </div>'
+            f'  <div class="src-note">📌 译文来源说明：{claim_src}；说明书：智慧芽机翻（官方 translation 接口）。</div>'
             '</div>'
         )
 
@@ -912,7 +1012,7 @@ def render_detail_html(
   <div id="tab-summary" class="tab-panel active" data-tab-group="dt">
     <div class="card">
       <div class="card-title"><span>📝 {'专利摘要（中外文对照）' if is_bilingual else '专利摘要原文'}</span></div>
-      {_render_bi_block(abstract_cn, abstract_str, is_bilingual)}
+      {_render_bi_block(abstract_cn, abstract_str, is_bilingual, cn_tag=abstract_tag)}
     </div>
     <div class="card">
       <div class="card-title">
@@ -936,11 +1036,11 @@ def render_detail_html(
   <div id="tab-desc" class="tab-panel" data-tab-group="dt">
     <div class="card">
       <div class="card-title"><span>🎯 {'技术领域与背景技术（中外文对照）' if is_bilingual else '背景技术与行业痛点'}</span></div>
-      {_render_bi_block(full_bg_cn, full_bg_orig, is_bilingual)}
+      {_render_bi_block(full_bg_cn, full_bg_orig, is_bilingual, cn_tag=tag_cn_api)}
     </div>
     <div class="card">
       <div class="card-title"><span>🚀 {'发明内容与有益效果（中外文对照）' if is_bilingual else '发明内容与有益效果'}</span></div>
-      {_render_bi_block(sum_cn, sum_orig, is_bilingual)}
+      {_render_bi_block(sum_cn, sum_orig, is_bilingual, cn_tag=tag_cn_api)}
     </div>
     <div class="card">
       <div class="card-title"><span>🔧 {'具体实施方式（中外文对照，点击展开/收起）' if is_bilingual else '具体实施方式（全文折叠保护，点击展开）'}</span></div>
@@ -949,7 +1049,7 @@ def render_detail_html(
           <div class="acc-title">点击展开/收起【具体实施方式】段落</div>
           <span class="acc-arrow">▼</span>
         </div>
-        <div class="acc-body">{_render_bi_block(emb_cn, emb_orig, is_bilingual)}</div>
+        <div class="acc-body">{_render_bi_block(emb_cn, emb_orig, is_bilingual, cn_tag=tag_cn_api)}</div>
       </div>
     </div>
   </div>

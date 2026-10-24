@@ -29,7 +29,7 @@ SKILL_DIR = SCRIPT_DIR.parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from html_renderer import render_overview_html, render_detail_html
+from html_renderer import render_overview_html, render_detail_html, build_translation_segments
 
 # 强制标准输出使用 UTF-8 编码，防止 Windows 终端乱码
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
@@ -1182,8 +1182,9 @@ def cmd_detail(args: argparse.Namespace) -> None:
     is_uuid = bool(re.match(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-", target))
     query_arg = {"patent_id": target} if is_uuid else {"patent_number": target.upper()}
 
-    # 始终并发拉取中文翻译接口（abstract_translated, claim_translated, description_translated），
-    # 当检测到专利详情为非中文时，自动输出中外文双语对照内容与双语交互式 HTML 报告
+    # 译文来源策略：
+    # - 摘要 + 权利要求：不使用 MCP 机翻，改为导出翻译任务由大模型翻译（质量更高、术语更准）
+    # - 说明书：直接采用智慧芽官方机翻（description_translated），保证长文本覆盖与速度
     tasks_to_run = [
         "bibliography",
         "get_patent_legal_status",
@@ -1192,8 +1193,6 @@ def cmd_detail(args: argparse.Namespace) -> None:
         "fulltext_image",
         "abstract_image",
         "pdf",
-        "abstract_translated",
-        "claim_translated",
         "description_translated",
     ]
     if "I" in modules:
@@ -1487,6 +1486,47 @@ def cmd_detail(args: argparse.Namespace) -> None:
     if pdf_res.get("success") and pdf_res.get("data"):
         pdf_url = pdf_res["data"][0].get("pdf", {}).get("path", "")
 
+    translator_label = getattr(args, "translator_label", "") or "Claude"
+
+    # 非中文专利：导出「摘要 + 权利要求」模型翻译任务（说明书已由智慧芽机翻覆盖）
+    if is_bilingual:
+        segments = build_translation_segments(pn, title_str, abstract_str, parsed_clms)
+        job_path = Path(args.translate_job) if getattr(args, "translate_job", "") else (
+            reports_dir / f"patent_detail_{safe_pn}_translation_job.json"
+        )
+        trans_hint = reports_dir / f"patent_detail_{safe_pn}_translations.json"
+        job = {
+            "pn": pn,
+            "html_path": html_path.as_posix(),
+            "translations_path_hint": trans_hint.as_posix(),
+            "translator_label": translator_label,
+            "strategy": {"abstract": "model", "claims": "model", "description": "patsnap_mt"},
+            "segments": segments,
+            "snapshot": {
+                "pn": pn, "apno": apno, "pid": pid, "title_str": title_str,
+                "simple_status": simple_status, "exdt": str(exdt),
+                "assignees": assignees, "applicants": applicants, "inventors": inventors,
+                "apdt": str(apdt), "pbdt": str(pbdt),
+                "abstract_str": abstract_str, "abs_img_url": abs_img_url,
+                "parsed_clms": parsed_clms, "parsed_desc": parsed_desc,
+                "pdf_url": pdf_url, "is_bilingual": is_bilingual,
+                "title_cn": title_cn, "abstract_cn": abstract_cn,
+                "parsed_clms_cn": parsed_clms_cn, "parsed_desc_cn": parsed_desc_cn,
+            },
+        }
+        job_path.write_text(json.dumps(job, ensure_ascii=False, indent=1), encoding="utf-8")
+        print("## [🌐 非中文专利 · 摘要/权利要求模型翻译任务已生成]")
+        print(f"- **译文策略**：摘要与权利要求 = {translator_label} 模型翻译；说明书 = 智慧芽机翻（已拉取）")
+        print(f"- **任务文件**：`{job_path.as_posix()}`（共 {len(segments)} 段待译：title/abstract/indep*/dep*）")
+        print(f"- **下一步（必须执行）**：将每个 `id` 的 `text` 翻译为简体中文（权利用专利语境、术语统一），")
+        print(f"  写成 JSON（键=段落 id，值=中文译文，**必须包含 `title`**），保存至：`{trans_hint.as_posix()}`")
+        print("- 然后执行重建命令（离线回注，不重复请求 MCP）：")
+        print("  ```bash")
+        print(f'  python "{(SKILL_DIR / "scripts" / "zhihuiya_helper.py").as_posix()}" translate-apply \\')
+        print(f'    --job "{job_path.as_posix()}" --translations "{trans_hint.as_posix()}"')
+        print("  ```")
+        print()
+
     html_content = render_detail_html(
         pn=pn,
         apno=apno,
@@ -1509,6 +1549,7 @@ def cmd_detail(args: argparse.Namespace) -> None:
         abstract_cn=abstract_cn,
         parsed_clms_cn=parsed_clms_cn,
         parsed_desc_cn=parsed_desc_cn,
+        translator_label=translator_label,
     )
     html_path.write_text(html_content, encoding="utf-8")
     print(f"## [交互式 HTML 报告已生成]")
@@ -1521,6 +1562,7 @@ def cmd_detail(args: argparse.Namespace) -> None:
         print("""
 📄 **单篇精读双语看板已生成（支持 [🔀中外对照 / 🇨🇳仅看中文 / 🌐仅看原文] 一键切换）**：
 👉 `{html_file}` ｜ 📥 [下载官方 PDF 全文]({pdf_link})
+- 📌 **译文来源**：摘要/权利要求 = {translator_label} 模型翻译 ｜ 说明书 = 智慧芽机翻
 
 **💡 一句话看懂 `{pn}` [🌐 中外文对照]**
 - **专利名称**：🇨🇳 **{title_cn}** ｜ 🌐 *{title}*
@@ -1548,6 +1590,7 @@ def cmd_detail(args: argparse.Namespace) -> None:
             status=simple_status,
             fig_cnt=len(parsed_desc["paired_figures"]),
             img_link=abs_img_url or (parsed_desc["paired_figures"][0]["url"] if parsed_desc["paired_figures"] else ""),
+            translator_label=translator_label,
         ))
     else:
         print("你在聊天框输出的文字【总字数严禁超过 300 字（总行数 ≤ 18 行）】，严禁抄写权利要求或说明书长段落、严禁连续贴多张附图刷屏（聊天框仅允许放 1 张代表附图）！必须严格按以下极简模板填空输出：")
@@ -1577,6 +1620,95 @@ def cmd_detail(args: argparse.Namespace) -> None:
             img_link=abs_img_url or (parsed_desc["paired_figures"][0]["url"] if parsed_desc["paired_figures"] else ""),
         ))
     print("=================================================================")
+
+
+def cmd_translate_apply(args: argparse.Namespace) -> None:
+    """回注模型译文（摘要 + 权利要求）并重建双语 HTML；说明书沿用智慧芽机翻（来自任务快照，离线重建）"""
+    job_path = Path(args.job)
+    trans_path = Path(args.translations)
+    if not job_path.exists():
+        print(f"❌ 找不到翻译任务文件：`{job_path.as_posix()}`")
+        sys.exit(1)
+    if not trans_path.exists():
+        print(f"❌ 找不到译文文件：`{trans_path.as_posix()}`（请先按任务文件逐项翻译后保存为 JSON）")
+        sys.exit(1)
+
+    job = json.loads(job_path.read_text(encoding="utf-8"))
+    translations = json.loads(trans_path.read_text(encoding="utf-8"))
+    if not isinstance(translations, dict) or not translations:
+        print("❌ 译文文件必须是非空 JSON 对象（键=片段 id，值=中文译文）。")
+        sys.exit(1)
+
+    snap = job.get("snapshot") or {}
+    if not snap:
+        print("❌ 任务文件缺少 snapshot 快照，请重新运行 detail 生成任务。")
+        sys.exit(1)
+    label = getattr(args, "translator_label", "") or job.get("translator_label") or "Claude"
+
+    html_out = Path(args.html_out) if getattr(args, "html_out", "") else Path(job["html_path"])
+    html_content = render_detail_html(
+        pn=snap["pn"],
+        apno=snap["apno"],
+        pid=snap["pid"],
+        title_str=snap["title_str"],
+        simple_status=snap["simple_status"],
+        exdt=snap["exdt"],
+        assignees=snap["assignees"],
+        applicants=snap["applicants"],
+        inventors=snap["inventors"],
+        apdt=snap["apdt"],
+        pbdt=snap["pbdt"],
+        abstract_str=snap["abstract_str"],
+        abs_img_url=snap["abs_img_url"],
+        parsed_clms=snap["parsed_clms"],
+        parsed_desc=snap["parsed_desc"],
+        pdf_url=snap.get("pdf_url", ""),
+        is_bilingual=snap.get("is_bilingual", True),
+        title_cn=snap.get("title_cn", ""),
+        abstract_cn=snap.get("abstract_cn", ""),
+        parsed_clms_cn=snap.get("parsed_clms_cn") or {},
+        parsed_desc_cn=snap.get("parsed_desc_cn") or {},
+        model_translations=translations,
+        translator_label=label,
+    )
+    html_out.write_text(html_content, encoding="utf-8")
+
+    seg_ids = [seg["id"] for seg in job.get("segments", [])]
+    missing = [sid for sid in seg_ids if sid not in translations]
+    print("# 🌐 双语对照 HTML 报告已重建（摘要/权利要求=模型译文，说明书=智慧芽机翻）")
+    print(f"- **HTML 报告本地路径**：`{html_out.as_posix()}`")
+    print(f"- **模型翻译覆盖率**：{len(seg_ids) - len(missing)}/{len(seg_ids)} 段 ｜ 翻译模型：{label}")
+    if missing:
+        print(f"- ⚠️ 以下片段暂无模型译文（该处将回退显示原文）：`{missing[:12]}`")
+    print()
+
+    pdf_url = snap.get("pdf_url", "")
+    figs = (snap.get("parsed_desc") or {}).get("paired_figures") or []
+    img_link = snap.get("abs_img_url") or (figs[0]["url"] if figs else "")
+    print("=================================================================")
+    print("⚠️ 【模型回复格式强约束（WorkBuddy 聊天框防冗余指令 — 必须严格遵守）】")
+    print("双语对照（摘要/权利要求=模型译文，说明书=智慧芽机翻）、权利要求全文、说明书完整章节与附图画廊均已写入 HTML。")
+    print("聊天框输出【总行数 ≤ 20 行】，必须提供精炼的中外文对照，关键部件用「中文术语 (外文原词)」格式，严禁抄写长段原文！按以下模板输出：")
+    print(f"""
+📄 **单篇精读双语看板已生成（支持 [🔀中外对照 / 🇨🇳仅看中文 / 🌐仅看原文] 一键切换）**：
+👉 `{html_out.name}` ｜ 📥 [下载官方 PDF 全文]({pdf_url or "#"})
+- 📌 **译文来源**：摘要/权利要求 = {label} 模型翻译 ｜ 说明书 = 智慧芽机翻
+
+**💡 一句话看懂 `{snap["pn"]}` [🌐 中外文对照]**
+- **专利名称**：🇨🇳 **{translations.get("title") or snap["title_str"]}** ｜ 🌐 *{snap["title_str"]}*
+- **基础信息**：🏢 {"、".join(snap["assignees"] or snap["applicants"]) or "未知"} ｜ 📅 申请日 {snap["apdt"]} ｜ 状态：**{snap["simple_status"]}**
+- **核心方案（中外术语对照）**：<用1~2句话（≤90字）讲清核心结构与效果，关键部件带外文原词>
+
+**⚖️ 独权中外对照（完整逐条双语权利要求与说明书见 HTML）**
+- **解决痛点**：<1句话，关键概念带外文原词>
+- **独权核心特征**：① **<中文特征1> (`<外文短语>`)**；② **<中文特征2> (`<外文短语>`)**；③ **<中文特征3> (`<外文短语>`)**
+- **关键实施亮点**：<1~2句话，标注段落号如 [0045]>
+
+**🖼️ 代表性附图预览**（其余 {len(figs)} 幅中外文配对附图请点击 HTML 画廊查看）：
+![{snap["pn"]}摘要附图]({img_link})
+""".strip())
+    print("=================================================================")
+
 
 
 def main() -> None:
@@ -1613,6 +1745,14 @@ def main() -> None:
     p_dt.add_argument("--extra-prompt", default="", help="临时附加的自然语言关注要求")
     p_dt.add_argument("--max-images", type=int, default=6, help="最多配对展示的全文附图数量（默认 6）")
     p_dt.add_argument("--html-out", default="", help="自定义生成的 HTML 报告文件路径")
+    p_dt.add_argument("--translate-job", default="", help="非中文专利的模型翻译任务 JSON 输出路径（默认自动命名）")
+    p_dt.add_argument("--translator-label", default="Claude", help="翻译所用模型名称，用于在报告中标注译文来源（默认 Claude）")
+
+    p_ta = subparsers.add_parser("translate-apply", help="回注模型译文（摘要+权利要求）并重建双语 HTML（说明书用智慧芽机翻）")
+    p_ta.add_argument("--job", required=True, help="detail 命令生成的翻译任务 JSON 路径")
+    p_ta.add_argument("--translations", required=True, help="模型产出的译文 JSON 路径（键=片段 id，值=中文译文）")
+    p_ta.add_argument("--translator-label", default="", help="翻译所用模型名称（默认取任务文件中记录的值）")
+    p_ta.add_argument("--html-out", default="", help="自定义输出路径（默认覆盖原 HTML 报告）")
 
     args = parser.parse_args()
     if args.command == "menu":
@@ -1623,6 +1763,8 @@ def main() -> None:
         cmd_overview(args)
     elif args.command == "detail":
         cmd_detail(args)
+    elif args.command == "translate-apply":
+        cmd_translate_apply(args)
 
 
 if __name__ == "__main__":
