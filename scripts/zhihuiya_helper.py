@@ -1486,7 +1486,7 @@ def cmd_detail(args: argparse.Namespace) -> None:
     if pdf_res.get("success") and pdf_res.get("data"):
         pdf_url = pdf_res["data"][0].get("pdf", {}).get("path", "")
 
-    translator_label = getattr(args, "translator_label", "") or "Claude"
+    translator_label = getattr(args, "translator_label", "") or "AI 模型"
 
     # 非中文专利：导出「摘要 + 权利要求」模型翻译任务（说明书已由智慧芽机翻覆盖）
     if is_bilingual:
@@ -1518,6 +1518,7 @@ def cmd_detail(args: argparse.Namespace) -> None:
         print("## [🌐 非中文专利 · 摘要/权利要求模型翻译任务已生成]")
         print(f"- **译文策略**：摘要与权利要求 = {translator_label} 模型翻译；说明书 = 智慧芽机翻（已拉取）")
         print(f"- **任务文件**：`{job_path.as_posix()}`（共 {len(segments)} 段待译：title/abstract/indep*/dep*）")
+        print("- **来源标注**：由重建脚本在三个 Tab 顶部各写入一次，正文无需逐段标注；`--translator-label` 仅作署名，不调用该模型 API")
         print(f"- **下一步（必须执行）**：将每个 `id` 的 `text` 翻译为简体中文（权利用专利语境、术语统一），")
         print(f"  写成 JSON（键=段落 id，值=中文译文，**必须包含 `title`**），保存至：`{trans_hint.as_posix()}`")
         print("- 然后执行重建命令（离线回注，不重复请求 MCP）：")
@@ -1578,7 +1579,7 @@ def cmd_detail(args: argparse.Namespace) -> None:
 - **关键实施亮点**：<1~2句话提炼核心实施例动作逻辑，标注段落号如 [0045]及部件标号>
 
 **🖼️ 代表性附图预览**（其余 {fig_cnt} 幅中外文配对高清附图请点击上方 HTML 画廊全屏放大查看）：
-![{pn}摘要附图]({img_link})
+{img_block}
 """.strip().format(
             html_file=html_path.name,
             pdf_link=pdf_url or "#",
@@ -1590,6 +1591,7 @@ def cmd_detail(args: argparse.Namespace) -> None:
             status=simple_status,
             fig_cnt=len(parsed_desc["paired_figures"]),
             img_link=abs_img_url or (parsed_desc["paired_figures"][0]["url"] if parsed_desc["paired_figures"] else ""),
+            img_block=("![{}摘要附图]({})".format(pn, abs_img_url or (parsed_desc["paired_figures"][0]["url"] if parsed_desc["paired_figures"] else ""))) if (abs_img_url or parsed_desc["paired_figures"]) else "（本专利无可用附图）",
             translator_label=translator_label,
         ))
     else:
@@ -1608,7 +1610,7 @@ def cmd_detail(args: argparse.Namespace) -> None:
 - **关键实施亮点**：<1~2句话提炼最核心的结构配合或控制逻辑，标注段落号如 [0080]>
 
 **🖼️ 代表性附图预览**（其余配对高清附图请点击上方 HTML 画廊全屏放大查看）：
-![{pn}摘要附图]({img_link})
+{img_block}
 """.strip().format(
             html_file=html_path.name,
             pdf_link=pdf_url or "#",
@@ -1618,6 +1620,7 @@ def cmd_detail(args: argparse.Namespace) -> None:
             apdt=apdt,
             status=simple_status,
             img_link=abs_img_url or (parsed_desc["paired_figures"][0]["url"] if parsed_desc["paired_figures"] else ""),
+            img_block=("![{}摘要附图]({})".format(pn, abs_img_url or (parsed_desc["paired_figures"][0]["url"] if parsed_desc["paired_figures"] else ""))) if (abs_img_url or parsed_desc["paired_figures"]) else "（本专利无可用附图）",
         ))
     print("=================================================================")
 
@@ -1643,7 +1646,7 @@ def cmd_translate_apply(args: argparse.Namespace) -> None:
     if not snap:
         print("❌ 任务文件缺少 snapshot 快照，请重新运行 detail 生成任务。")
         sys.exit(1)
-    label = getattr(args, "translator_label", "") or job.get("translator_label") or "Claude"
+    label = getattr(args, "translator_label", "") or job.get("translator_label") or "AI 模型"
 
     html_out = Path(args.html_out) if getattr(args, "html_out", "") else Path(job["html_path"])
     html_content = render_detail_html(
@@ -1685,6 +1688,7 @@ def cmd_translate_apply(args: argparse.Namespace) -> None:
     pdf_url = snap.get("pdf_url", "")
     figs = (snap.get("parsed_desc") or {}).get("paired_figures") or []
     img_link = snap.get("abs_img_url") or (figs[0]["url"] if figs else "")
+    img_block = f'![{snap["pn"]}摘要附图]({img_link})' if img_link else "（本专利无可用附图）"
     print("=================================================================")
     print("⚠️ 【模型回复格式强约束（WorkBuddy 聊天框防冗余指令 — 必须严格遵守）】")
     print("双语对照（摘要/权利要求=模型译文，说明书=智慧芽机翻）、权利要求全文、说明书完整章节与附图画廊均已写入 HTML。")
@@ -1705,7 +1709,7 @@ def cmd_translate_apply(args: argparse.Namespace) -> None:
 - **关键实施亮点**：<1~2句话，标注段落号如 [0045]>
 
 **🖼️ 代表性附图预览**（其余 {len(figs)} 幅中外文配对附图请点击 HTML 画廊查看）：
-![{snap["pn"]}摘要附图]({img_link})
+{img_block}
 """.strip())
     print("=================================================================")
 
@@ -1746,7 +1750,7 @@ def main() -> None:
     p_dt.add_argument("--max-images", type=int, default=6, help="最多配对展示的全文附图数量（默认 6）")
     p_dt.add_argument("--html-out", default="", help="自定义生成的 HTML 报告文件路径")
     p_dt.add_argument("--translate-job", default="", help="非中文专利的模型翻译任务 JSON 输出路径（默认自动命名）")
-    p_dt.add_argument("--translator-label", default="Claude", help="翻译所用模型名称，用于在报告中标注译文来源（默认 Claude）")
+    p_dt.add_argument("--translator-label", default="", help="翻译所用模型名称，用于在报告中标注译文来源（建议填当前对话实际使用的模型名，如 Claude / GPT-5 / DeepSeek）")
 
     p_ta = subparsers.add_parser("translate-apply", help="回注模型译文（摘要+权利要求）并重建双语 HTML（说明书用智慧芽机翻）")
     p_ta.add_argument("--job", required=True, help="detail 命令生成的翻译任务 JSON 路径")

@@ -161,8 +161,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "<SKILL_DIR>/scripts/run_hel
 >   2. **说明书 = 智慧芽机翻**：脚本已自动拉取 `description_translated`（技术领域 / 背景技术 / 发明内容 / 具体实施方式 / 附图说明），**不要**自己翻译说明书；
 >   3. 保存译文后执行 `translate-apply` 回注重建双语 HTML（离线重建，不重复请求 MCP）：
 >      `powershell -NoProfile -ExecutionPolicy Bypass -File "<SKILL_DIR>/scripts/run_helper.ps1" translate-apply --job "<job.json>" --translations "<translations.json>" --translator-label "<模型名>"`
->   4. **译文来源必须逐处标注**：摘要/权利要求标「🇨🇳 模型译文 · <模型名>」，说明书各章节标「🇨🇳 智慧芽机翻」；HTML 顶部的来源说明行（`src-note`）由脚本自动写入，聊天回复必须按模板中的「📌 译文来源」一行如实填写；
->   5. HTML 报告提供**「🔀 中外对照 / 🇨🇳 仅看中文 / 🌐 仅看原文」**一键切换，说明书章节按段配对；聊天框仍需给出**中外双语标题**，核心方案与独权特征用**「中文术语 (`外文原词`)」**格式；
+>   4. **译文来源只在每个 Tab 顶部提示一次**：脚本会自动在「💡 简述与附图 / ⚖️ 权利要求 / 📖 说明书关键段」三个面板顶端各写入一行 `src-note`（摘要与权利要求 = <模型名> 模型翻译，说明书 = 智慧芽机翻），**正文段落内不要逐段标注来源**；聊天回复必须按模板中的「📌 译文来源」一行如实填写；
+>   5. `--translator-label` 只用于在报告里显示"由哪个模型翻译"，**不是调用某个模型的 API**：请填你**当前实际使用**的模型名称（如 DeepSeek / GPT-5 / Gemini / Claude），不确定时留空，脚本会回退为「AI 模型」；
+>   6. HTML 报告提供**「🔀 中外对照 / 🇨🇳 仅看中文 / 🌐 仅看原文」**一键切换，说明书章节按段配对；聊天框仍需给出**中外双语标题**，核心方案与独权特征用**「中文术语 (`外文原词`)」**格式；
 > - 必须严格按脚本末尾输出的**填空式模板**（区分中文专利与非中文双语专利）输出：
 
 ```markdown
