@@ -41,13 +41,42 @@ TEMPLATE_FILE = SKILL_DIR / "config" / "templates.json"
 DEFAULT_MCP_URL = os.environ.get(
     "ZHIHUIYA_MCP_URL", "https://connect.zhihuiya.com/1458a4/mcp"
 )
+DEFAULT_MCP_LANDSCAPE_URL = os.environ.get(
+    "ZHIHUIYA_LANDSCAPE_MCP_URL", "https://connect.zhihuiya.com/59100a/mcp"
+)
 DEFAULT_API_KEY = os.environ.get(
     "ZHIHUIYA_MCP_KEY", "sk-loWNFvv4H51k86i1mESGC7JeUoV9X0IDTDZSUaKPSDSkZb6N"
 )
 
+# 官方全景宏观统计工具集（走 59100a 聚合计算中心，实现全量数据库级别零抽样偏差）
+LANDSCAPE_TOOLS = {
+    "applicant_rank",
+    "trend",
+    "technology_life_cycle",
+    "applicant_technology_analysis",
+    "applicant_trend",
+    "cooperation_applicant_analysis",
+    "tech_applicant_dist",
+    "technology_constitute",
+    "rec_office",
+    "get_rec_office_year",
+    "refered_rank",
+    "famn_rank",
+    "domain_map",
+    "map_3d",
+    "search_patents_facet",
+    "search_patents_statistics",
+    "search_patents_v3",
+}
 
-def call_mcp_tool(tool_name: str, arguments: dict, timeout: int = 25) -> dict:
-    """调用智慧芽 Streamable HTTP MCP 工具并返回 structuredContent 数据"""
+
+def call_mcp_tool(tool_name: str, arguments: dict, timeout: int = 25, endpoint: str = None) -> dict:
+    """调用智慧芽 Streamable HTTP MCP 工具（自动根据工具类型智能路由至检索中心 1458a4 或全景统计中心 59100a）"""
+    target_url = (
+        DEFAULT_MCP_LANDSCAPE_URL
+        if (endpoint == "landscape" or tool_name in LANDSCAPE_TOOLS)
+        else DEFAULT_MCP_URL
+    )
     headers = {
         "Authorization": f"Bearer {DEFAULT_API_KEY}",
         "accept": "application/json, text/event-stream",
@@ -65,7 +94,7 @@ def call_mcp_tool(tool_name: str, arguments: dict, timeout: int = 25) -> dict:
         },
     }
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(DEFAULT_MCP_URL, data=data, headers=headers, method="POST")
+    req = urllib.request.Request(target_url, data=data, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw_text = resp.read().decode("utf-8", errors="replace")
@@ -282,7 +311,7 @@ def build_patsnap_query(company: str = "", keyword: str = "", raw_query: str = "
 
 
 def analyze_corporate_tree_and_applicants(
-    sample_results: list, base_query: str, company_filter: str = ""
+    sample_results: list, base_query: str, company_filter: str = "", seed_corps: list = None
 ) -> dict:
     """
     利用智慧芽公司树 (ANCS / ANS) 及权利流转/合申共现关系，
@@ -328,8 +357,13 @@ def analyze_corporate_tree_and_applicants(
                     direct_co_links.setdefault(u, Counter())[v] += 1
                     direct_co_links.setdefault(v, Counter())[u] += 1
 
-    # 选取 Top 24 候选企业主体进行智慧芽公司树 (ANCS/ANS) 深度穿透探测（覆盖中外主流竞争对手）
-    top_corps = [name for name, _ in corp_candidates.most_common(24)]
+    # 优先注入智慧芽全景统计接口 (applicant_rank) 返回的官方全量真实头部申请人（零抽样误差）
+    seed_clean = [
+        s.strip() for s in (seed_corps or [])
+        if s and s.strip() and not is_univ_or_inst(s) and not is_person_name(s)
+    ]
+    sample_corps = [name for name, _ in corp_candidates.most_common(20)]
+    top_corps = list(dict.fromkeys(seed_clean + sample_corps))[:25]
 
     def probe_corporate_tree(entity_name: str) -> dict:
         # 构造安全的精确短语查询词（HTTP JSON 直传无需担心 Shell 引号转义，用双引号确保不会因通用英文词误匹配无关企业）
@@ -821,17 +855,30 @@ def cmd_overview(args: argparse.Namespace) -> None:
     # 若激活模块 B（主要申请人与集团控股主体识别），拉取 100~200 件样本以提高行业玩家覆盖度
     first_batch_size = 100 if "B" in modules else max(args.limit * 2, 30)
 
-    search_res = call_mcp_tool(
-        "search_patents",
-        {
-            "query_text": query_text,
-            "limit": first_batch_size,
-            "offset": 0,
-            "sort_field": "SCORE",
-            "sort_order": "DESC",
-            "collapse_by": "PBD",
-        },
-    )
+    # 并发发起检索与智慧芽官方全量宏观统计 (trend / applicant_rank / technology_constitute / rec_office)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+        f_search = executor.submit(
+            call_mcp_tool,
+            "search_patents",
+            {
+                "query_text": query_text,
+                "limit": first_batch_size,
+                "offset": 0,
+                "sort_field": "SCORE",
+                "sort_order": "DESC",
+                "collapse_by": "PBD",
+            },
+        )
+        f_trend = executor.submit(call_mcp_tool, "trend", {"query_text": query_text})
+        f_rank = executor.submit(call_mcp_tool, "applicant_rank", {"query_text": query_text})
+        f_tech = executor.submit(call_mcp_tool, "technology_constitute", {"query_text": query_text})
+        f_office = executor.submit(call_mcp_tool, "rec_office", {"query_text": query_text})
+
+        search_res = f_search.result()
+        trend_res = f_trend.result()
+        rank_res = f_rank.result()
+        tech_res = f_tech.result()
+        office_res = f_office.result()
 
     if not search_res.get("success"):
         print(f"❌ 检索失败：{search_res.get('error_msg', '未知错误')}")
@@ -841,6 +888,27 @@ def cmd_overview(args: argparse.Namespace) -> None:
     data = search_res.get("data", {})
     total_count = data.get("total_search_result_count", 0)
     results = list(data.get("results", []))
+
+    # 解析官方全景宏观统计结果（100% 数据库级别零抽样偏差）
+    trend_values = (trend_res.get("data") or {}).get("values") or []
+    rank_values = (rank_res.get("data") or {}).get("values") or []
+    tech_values = (tech_res.get("data") or {}).get("values") or []
+    office_values = (office_res.get("data") or {}).get("values") or []
+
+    seed_corps = [item["name"] for item in rank_values if item.get("name")]
+
+    exact_year_counts = {}
+    total_10yr_grants = 0
+    total_10yr_apps = 0
+    for item in trend_values:
+        yr = str(item.get("year", ""))
+        tot = item.get("total", 0)
+        g_num = item.get("grant_num", 0)
+        if yr:
+            exact_year_counts[yr] = tot
+            total_10yr_apps += tot
+            total_10yr_grants += g_num
+    grant_rate_str = f"{round(total_10yr_grants / total_10yr_apps * 100, 1)}%" if total_10yr_apps else ""
 
     # 若激活了模块 B 且命中总量超过 100 件，并发追加第 2 页 (100~200) 样本以全面覆盖主要申请人
     if "B" in modules and total_count > 100 and len(results) >= 100:
@@ -903,16 +971,28 @@ def cmd_overview(args: argparse.Namespace) -> None:
         if pn.endswith(("B", "B1", "B2", "C")):
             granted_count += 1
 
+    # 优先采用官方全景统计的受理局分布
+    if office_values:
+        auth_counter = Counter({(item.get("code") or item.get("rec_office")): item.get("num", 0) for item in office_values})
+
+    # 优先采用官方全量近 10 年申请趋势
+    display_year_counter = exact_year_counts if exact_year_counts else year_counter
+
     if "A" in modules:
-        print("## [模块 A] 专利总量与申请趋势")
-        print(f"- **命中专利总量**：{total_count} 件")
-        print(f"- **抽样授权占比**：抽样 {len(results)} 件中含授权公告号（B/B1/B2）约 {granted_count} 件")
-        years_str = " | ".join(f"{yr}年: {cnt}件" for yr, cnt in sorted(year_counter.items(), reverse=True)[:8])
-        print(f"- **抽样申请年份分布**：{years_str or '暂无'}\n")
+        print("## [模块 A] 专利总量与申请趋势（智慧芽官方全量统计·零抽样偏差）")
+        print(f"- **全库命中专利总量**：**{total_count}** 件")
+        if grant_rate_str:
+            print(f"- **近十年全库授权统计**：累计授权 **{total_10yr_grants:,}** 件 / 申请 **{total_10yr_apps:,}** 件（**官方全量授权率 {grant_rate_str}**）")
+        else:
+            print(f"- **抽样授权占比**：抽样 {len(results)} 件中含授权公告号（B/B1/B2）约 {granted_count} 件")
+        years_str = " | ".join(
+            f"{yr}年: {cnt}件" for yr, cnt in sorted(display_year_counter.items(), key=lambda x: str(x[0]), reverse=True)[:8]
+        )
+        print(f"- **近十年全量申请趋势**：{years_str or '暂无'}\n")
 
     if "B" in modules:
-        print("## [模块 B] 主要申请人与主要申请主体识别（智慧芽公司树控股/关联归并）")
-        corp_analysis = analyze_corporate_tree_and_applicants(results, query_text, args.company)
+        print("## [模块 B] 主要申请人与主要申请主体识别（智慧芽全量排行 + 公司树控股穿透）")
+        corp_analysis = analyze_corporate_tree_and_applicants(results, query_text, args.company, seed_corps=seed_corps)
         grouped_corps = corp_analysis["grouped_corporations"]
 
         if grouped_corps:
@@ -936,11 +1016,29 @@ def cmd_overview(args: argparse.Namespace) -> None:
                 print(f"| **#{idx}** | **{grp['group_label']}** (`{tot_num}件`) | `{core_ent}` (`{prim_cnt}件`) | {subs_col} |")
             print()
 
-        print(f"### 2. 具体申请人原始高频分布（Top {corp_analysis['sample_size']} 样本）")
-        top_raw_str = " | ".join(
-            f"**{name}** ({cnt}件)" for name, cnt in corp_analysis["raw_curr_counter"].most_common(10)
-        )
-        print(f"- {top_raw_str}\n")
+        if rank_values:
+            print("### 2. 智慧芽全库主要申请人真实排名（Top 10 全量零抽样）")
+            top_rank_str = " | ".join(f"**{item['name']}** ({item['num']}件)" for item in rank_values[:10])
+            print(f"- {top_rank_str}\n")
+        else:
+            print(f"### 2. 具体申请人原始高频分布（Top {corp_analysis['sample_size']} 样本）")
+            top_raw_str = " | ".join(
+                f"**{name}** ({cnt}件)" for name, cnt in corp_analysis["raw_curr_counter"].most_common(10)
+            )
+            print(f"- {top_raw_str}\n")
+    else:
+        corp_analysis = {"grouped_corporations": [], "raw_curr_counter": Counter(), "sample_size": len(results)}
+
+    if "E" in modules and tech_values:
+        print("## [模块 E] 核心技术分类与布局构成（智慧芽官方全量 IPC 分析）")
+        print("| IPC分类 | 全球专利量 | 技术领域说明 |")
+        print("| :--- | :--- | :--- |")
+        for t_item in tech_values[:6]:
+            ipc_code = t_item.get("ipc", "")
+            ipc_num = t_item.get("num", 0)
+            ipc_desc = (t_item.get("content") or "").replace("\n", " ").strip()[:50]
+            print(f"| **{ipc_code}** | `{ipc_num}件` | {ipc_desc} |")
+        print()
     else:
         corp_analysis = {"grouped_corporations": [], "raw_curr_counter": Counter(), "sample_size": len(results)}
 
@@ -1066,13 +1164,11 @@ def cmd_overview(args: argparse.Namespace) -> None:
                 pdf_url = pdf_obj.get("path") or ""
         enriched["pdf_url"] = pdf_url
 
-        # 当代表专利标题或摘要为非中文时，自动拉取中文翻译以提供中外文对照
-        if is_non_chinese_text(enriched.get("title", "")) or is_non_chinese_text(enriched.get("abstract", "")):
-            tr_res = call_mcp_tool("abstract_translated", {"patent_id": pid, "lang": "CN"})
-            if tr_res.get("success") and tr_res.get("data"):
-                tr_d = tr_res["data"][0]
-                enriched["title_cn"] = clean_html_text(tr_d.get("title", "")).strip()
-                enriched["abstract_cn"] = clean_html_text(tr_d.get("abstract", "")).strip()
+        # 对于非中文代表专利，严禁调用智慧芽机翻；标题与摘要由当前大模型直接翻译
+        is_bi = is_non_chinese_text(enriched.get("title", "")) or is_non_chinese_text(enriched.get("abstract", ""))
+        enriched["is_bilingual"] = is_bi
+        enriched["title_cn"] = ""
+        enriched["abstract_cn"] = ""
 
         if "G" in modules:
             cit_res = call_mcp_tool("forward_citation", {"patent_id": pid})
@@ -1131,13 +1227,16 @@ def cmd_overview(args: argparse.Namespace) -> None:
         total_count=total_count,
         sample_count=len(results),
         granted_count=granted_count,
-        year_counter=year_counter,
+        year_counter=display_year_counter,
         auth_counter=auth_counter,
         inventor_counter=inventor_counter,
         corp_analysis=corp_analysis,
         enriched_top=enriched_top,
         title_label=title_label,
         summary_text=args.extra_prompt or tpl.get("custom_prompt", ""),
+        tech_list=tech_values,
+        grant_rate_str=grant_rate_str,
+        raw_rank_list=rank_values,
     )
     html_path.write_text(html_content, encoding="utf-8")
     print(f"## [交互式 HTML 报告已生成]")
@@ -1238,14 +1337,23 @@ def cmd_detail(args: argparse.Namespace) -> None:
         abstracts = [abstracts]
     abstract_str = clean_html_text(abstracts[0].get("text", "")) if abstracts else "暂无摘要"
 
-    # 解析中文翻译数据（标题、摘要、权利要求、说明书）
+    # 严格执行翻译规则：
+    # - 标题 / 摘要 / 权利要求：严禁使用智慧芽机翻，必须由大模型翻译（质量更高、术语更统一）
+    # - 说明书：只拉取智慧芽官方机翻（description_translated），注明「智慧芽官方机器翻译」
     title_cn = ""
     abstract_cn = ""
-    abs_tr = results_map.get("abstract_translated", {})
-    if abs_tr.get("success") and abs_tr.get("data"):
-        tr_item = abs_tr["data"][0]
-        title_cn = clean_html_text(tr_item.get("title", "")).strip()
-        abstract_cn = clean_html_text(tr_item.get("abstract", "")).strip()
+
+    # 可选直接加载 --translations 传入的模型译文
+    model_translations = {}
+    trans_arg = getattr(args, "translations", "")
+    if trans_arg and Path(trans_arg).exists():
+        try:
+            model_translations = json.loads(Path(trans_arg).read_text(encoding="utf-8"))
+            if isinstance(model_translations, dict):
+                title_cn = model_translations.get("title", "")
+                abstract_cn = model_translations.get("abstract", "")
+        except Exception:
+            pass
 
     clm_res = results_map.get("claims", {})
     clm_total = 0
@@ -1260,11 +1368,11 @@ def cmd_detail(args: argparse.Namespace) -> None:
         parsed_clms = parse_claims_structured(raw_clm_html)
 
     parsed_clms_cn = {"independent": [], "dependent": []}
-    clm_tr = results_map.get("claim_translated", {})
-    if clm_tr.get("success") and clm_tr.get("data"):
-        raw_clm_cn = clm_tr["data"][0].get("claims", "")
-        if raw_clm_cn:
-            parsed_clms_cn = parse_claims_structured(raw_clm_cn)
+    if model_translations:
+        mt_indep = [model_translations.get(f"indep{i}", "") for i in range(1, len(parsed_clms["independent"]) + 1)]
+        mt_dep = [model_translations.get(f"dep{i}", "") for i in range(1, len(parsed_clms["dependent"]) + 1)]
+        if any(mt_indep) or any(mt_dep):
+            parsed_clms_cn = {"independent": mt_indep, "dependent": mt_dep}
 
     desc_res = results_map.get("description", {})
     ft_img_res = results_map.get("fulltext_image", {})
@@ -1550,6 +1658,7 @@ def cmd_detail(args: argparse.Namespace) -> None:
         abstract_cn=abstract_cn,
         parsed_clms_cn=parsed_clms_cn,
         parsed_desc_cn=parsed_desc_cn,
+        model_translations=model_translations,
         translator_label=translator_label,
     )
     html_path.write_text(html_content, encoding="utf-8")
@@ -1750,6 +1859,7 @@ def main() -> None:
     p_dt.add_argument("--max-images", type=int, default=6, help="最多配对展示的全文附图数量（默认 6）")
     p_dt.add_argument("--html-out", default="", help="自定义生成的 HTML 报告文件路径")
     p_dt.add_argument("--translate-job", default="", help="非中文专利的模型翻译任务 JSON 输出路径（默认自动命名）")
+    p_dt.add_argument("--translations", default="", help="可选直接传入模型译文 JSON 路径，一步完成双语 HTML 渲染")
     p_dt.add_argument("--translator-label", default="", help="翻译所用模型名称，用于在报告中标注译文来源（建议填当前对话实际使用的模型名，如 Claude / GPT-5 / DeepSeek）")
 
     p_ta = subparsers.add_parser("translate-apply", help="回注模型译文（摘要+权利要求）并重建双语 HTML（说明书用智慧芽机翻）")

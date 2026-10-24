@@ -547,6 +547,9 @@ def render_overview_html(
     enriched_top: list,
     title_label: str = "专利概览看板",
     summary_text: str = "",
+    tech_list: list = None,
+    grant_rate_str: str = "",
+    raw_rank_list: list = None,
 ) -> str:
     """生成主体/领域专利概览的单文件交互式 HTML 报告"""
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -568,7 +571,9 @@ def render_overview_html(
         )
 
     # 2. 受理局分布条形图
-    sorted_auth = auth_counter.most_common(6) if hasattr(auth_counter, "most_common") else []
+    sorted_auth = auth_counter.most_common(6) if hasattr(auth_counter, "most_common") else (
+        sorted(auth_counter.items(), key=lambda x: x[1], reverse=True)[:6] if isinstance(auth_counter, dict) else []
+    )
     max_auth = max((v for _, v in sorted_auth), default=1)
     auth_bars_html = []
     for auth, cnt in sorted_auth:
@@ -581,7 +586,25 @@ def render_overview_html(
             f'</div>'
         )
 
-    # 3. 集团公司树手风琴卡片
+    # 3. 核心技术领域构成 (IPC) 条形图
+    tech_bars_html = []
+    if tech_list:
+        max_tech = max((item.get("num", 0) for item in tech_list), default=1)
+        for item in tech_list[:8]:
+            ipc = item.get("ipc", "")
+            cnt = item.get("num", 0)
+            desc = item.get("content", "")
+            pct = int(round((cnt / max_tech) * 100)) if max_tech else 0
+            tech_bars_html.append(
+                f'<div class="bar-row">'
+                f'<div class="bar-label" style="font-weight:700;color:#165dff">{_esc(ipc)}</div>'
+                f'<div class="bar-track"><div class="bar-fill" style="width:{pct}%;background:#722ed1"></div></div>'
+                f'<div class="bar-val">{cnt}件</div>'
+                f'</div>'
+                f'<div style="font-size:11.5px;color:#86909c;margin:-2px 0 8px 0;line-height:1.35;">{_esc(desc[:65])}</div>'
+            )
+
+    # 4. 集团公司树手风琴卡片
     corp_acc_html = []
     for idx, grp in enumerate(grouped_corps[:10], 1):
         open_cls = " open" if idx <= 3 else ""
@@ -612,13 +635,18 @@ def render_overview_html(
             f'</div>'
         )
 
-    # 4. 原始申请人高频列表
+    # 5. 官方全量主要申请人或高频列表
     raw_app_rows = []
-    if hasattr(raw_curr, "most_common"):
+    if raw_rank_list:
+        for item in raw_rank_list[:12]:
+            name = item.get("name", "")
+            cnt = item.get("num", 0)
+            raw_app_rows.append(f'<span class="sub-tag">📌 {_esc(name)} <strong>({cnt}件)</strong></span>')
+    elif hasattr(raw_curr, "most_common"):
         for name, cnt in raw_curr.most_common(12):
             raw_app_rows.append(f'<span class="sub-tag">📌 {_esc(name)} <strong>({cnt}件)</strong></span>')
 
-    # 5. 核心发明人
+    # 6. 核心发明人
     inv_tags = []
     if hasattr(inventor_counter, "most_common"):
         for name, cnt in inventor_counter.most_common(12):
@@ -735,15 +763,15 @@ def render_overview_html(
 
   <div class="kpi-grid">
     <div class="kpi-card"><div class="kpi-val">{total_count:,}</div><div class="kpi-lbl">全球命中专利总数</div></div>
-    <div class="kpi-card"><div class="kpi-val">{sample_count}</div><div class="kpi-lbl">深度抽样分析数</div></div>
+    <div class="kpi-card"><div class="kpi-val">{sample_count}</div><div class="kpi-lbl">深度穿透分析数</div></div>
     <div class="kpi-card"><div class="kpi-val">{len(grouped_corps)}</div><div class="kpi-lbl">识别核心集团系</div></div>
-    <div class="kpi-card"><div class="kpi-val">{granted_count}</div><div class="kpi-lbl">抽样含授权(B)数</div></div>
+    {f'<div class="kpi-card"><div class="kpi-val">{grant_rate_str}</div><div class="kpi-lbl">全库近十年授权率</div></div>' if grant_rate_str else f'<div class="kpi-card"><div class="kpi-val">{granted_count}</div><div class="kpi-lbl">抽样含授权(B)数</div></div>'}
   </div>
 
   <div class="tabs">
     <button class="tab-btn active" data-btn-group="main" onclick="switchTab('main','tab-corps',this)">🏢 集团与申请人</button>
     <button class="tab-btn" data-btn-group="main" onclick="switchTab('main','tab-patents',this)">📑 代表专利({len(enriched_top)})</button>
-    <button class="tab-btn" data-btn-group="main" onclick="switchTab('main','tab-trends',this)">📈 趋势与团队</button>
+    <button class="tab-btn" data-btn-group="main" onclick="switchTab('main','tab-trends',this)">📈 趋势与领域</button>
   </div>
 
   <div id="tab-corps" class="tab-panel active" data-tab-group="main">
@@ -755,7 +783,7 @@ def render_overview_html(
       {"".join(corp_acc_html) if corp_acc_html else '<div style="color:#86909c">暂无集团归并数据</div>'}
     </div>
     <div class="card">
-      <div class="card-title"><span>📌 具体申请人原始高频分布（Top 12）</span></div>
+      <div class="card-title"><span>📌 智慧芽全库主要申请人真实排名（Top 10 全量零抽样）</span></div>
       <div>{"".join(raw_app_rows)}</div>
     </div>
   </div>
@@ -778,11 +806,15 @@ def render_overview_html(
 
   <div id="tab-trends" class="tab-panel" data-tab-group="main">
     <div class="card">
-      <div class="card-title"><span>📈 近年申请趋势分布（抽样）</span></div>
+      <div class="card-title"><span>📈 近十年申请趋势与授权统计（全量无抽样）</span></div>
       {"".join(year_bars_html)}
     </div>
+    {f'''<div class="card">
+      <div class="card-title"><span>🧩 核心技术领域构成（全量 IPC 分析）</span></div>
+      {''.join(tech_bars_html)}
+    </div>''' if tech_bars_html else ''}
     <div class="card">
-      <div class="card-title"><span>🌍 受理局/国家地区分布（抽样）</span></div>
+      <div class="card-title"><span>🌍 受理局/国家地区分布（全量统计）</span></div>
       {"".join(auth_bars_html)}
     </div>
     <div class="card">
@@ -858,13 +890,15 @@ def render_detail_html(
             indep_clms_cn = mt_indep
             dep_clms_cn = mt_dep
 
-    # 译文来源（统一在各 Tab 顶部提示一次，不再逐段标注）
-    src_model = f"{translator_label} 模型翻译"
-    src_api = "智慧芽机翻（官方 translation 接口）"
-    claim_src = src_model if mt else src_api
-    abstract_src = src_model if (mt.get("abstract") or mt.get("title")) else src_api
+    # 译文来源强约束：
+    # - 标题 / 摘要 / 权利要求：严禁使用机翻，必须由大模型翻译，注明「{translator_label} 翻译」；若未翻译则保留原文待模型翻译
+    # - 说明书：只允许拉取智慧芽官方机翻，统一注明「智慧芽官方机器翻译」
+    label_model = f"{translator_label} 翻译" if translator_label else "AI 模型翻译"
+    label_api = "智慧芽官方机器翻译"
+    claim_src = label_model if mt else f"外文原文（待 {label_model}）"
+    abstract_src = label_model if (mt.get("abstract") or mt.get("title")) else f"外文原文（待 {label_model}）"
     note_summary_html = (
-        f'<div class="src-note">📌 译文来源 ｜ 摘要：{abstract_src}；附图图注：{src_api}</div>'
+        f'<div class="src-note">📌 译文来源 ｜ 摘要：{abstract_src} ｜ 说明书附图图注：{label_api}</div>'
         if is_bilingual else ""
     )
     note_claims_html = (
@@ -872,7 +906,7 @@ def render_detail_html(
         if is_bilingual else ""
     )
     note_desc_html = (
-        f'<div class="src-note">📌 译文来源 ｜ 说明书：{src_api}</div>'
+        f'<div class="src-note">📌 译文来源 ｜ 说明书全文各章节：{label_api}</div>'
         if is_bilingual else ""
     )
 
