@@ -1,0 +1,964 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+智慧芽 (PatSnap) 移动端专利报告自包含 HTML 渲染引擎
+特点：
+1. 100% 零外部依赖（纯内联 CSS + 原生轻量 JS + 内联 SVG 图表，离线/内网/手机端秒开）
+2. 采用“首屏看板 + 顶部标签页 (Tabs) + 手风琴折叠 (Accordion) + 状态筛选器 + 附图点击放大 (Lightbox)”
+3. 在不损失任何信息总量的前提下，将多屏长文浓缩为一页式移动端交互应用
+"""
+
+import datetime
+import html
+import re
+from pathlib import Path
+
+
+def _esc(text: object) -> str:
+    if text is None:
+        return ""
+    return html.escape(str(text))
+
+
+def _status_badge(status_str: str) -> tuple:
+    """返回 (HTML徽章, 筛选分类key)"""
+    s = str(status_str or "未知")
+    if "有效" in s:
+        return f'<span class="badge badge-valid">🟢 {_esc(s)}</span>', "valid"
+    if "审中" in s or "PCT" in s:
+        return f'<span class="badge badge-pending">🟡 {_esc(s)}</span>', "pending"
+    if "失效" in s:
+        return f'<span class="badge badge-invalid">⚪ {_esc(s)}</span>', "invalid"
+    return f'<span class="badge badge-unknown">🔵 {_esc(s)}</span>', "other"
+
+
+COMMON_CSS = """
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  background: #f4f6f9;
+  color: #1d2129;
+  line-height: 1.55;
+  font-size: 14px;
+  padding-bottom: 40px;
+}
+.container { max-width: 760px; margin: 0 auto; padding: 12px; }
+.hero {
+  background: linear-gradient(135deg, #0f40c5 0%, #165dff 60%, #3b82f6 100%);
+  color: #fff;
+  border-radius: 12px;
+  padding: 18px 16px;
+  margin-bottom: 12px;
+  box-shadow: 0 4px 14px rgba(22, 93, 255, 0.18);
+}
+.hero-tag {
+  display: inline-block;
+  font-size: 12px;
+  background: rgba(255,255,255,0.2);
+  padding: 2px 8px;
+  border-radius: 99px;
+  margin-bottom: 6px;
+}
+.hero h1 { font-size: 18px; font-weight: 700; line-height: 1.35; margin-bottom: 8px; }
+.hero-meta { font-size: 12px; opacity: 0.9; display: flex; flex-wrap: wrap; gap: 10px; }
+.hero-summary {
+  margin-top: 10px;
+  background: rgba(255,255,255,0.14);
+  border-left: 3px solid #fff;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+@media (max-width: 480px) {
+  .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+}
+.kpi-card {
+  background: #ffffff;
+  border-radius: 10px;
+  padding: 10px 12px;
+  border: 1px solid #e5e6eb;
+  text-align: center;
+}
+.kpi-val { font-size: 20px; font-weight: 700; color: #165dff; }
+.kpi-lbl { font-size: 12px; color: #86909c; margin-top: 2px; }
+.tabs {
+  display: flex;
+  background: #e8ebf0;
+  padding: 4px;
+  border-radius: 10px;
+  margin-bottom: 12px;
+  position: sticky;
+  top: 6px;
+  z-index: 20;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+}
+.tab-btn {
+  flex: 1;
+  text-align: center;
+  padding: 8px 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #4e5969;
+  border-radius: 8px;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  transition: all 0.15s;
+}
+.tab-btn.active {
+  background: #ffffff;
+  color: #165dff;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+}
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+.card {
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 14px;
+  margin-bottom: 12px;
+  border: 1px solid #e5e6eb;
+}
+.card-title {
+  font-size: 15px;
+  font-weight: 700;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #e5e6eb;
+  padding-bottom: 8px;
+}
+.bar-row { display: flex; align-items: center; margin-bottom: 8px; font-size: 12px; }
+.bar-label { width: 72px; flex-shrink: 0; color: #4e5969; font-weight: 500; }
+.bar-track { flex: 1; background: #f2f3f5; height: 10px; border-radius: 99px; overflow: hidden; margin: 0 8px; }
+.bar-fill { background: linear-gradient(90deg, #165dff, #6aa1ff); height: 100%; border-radius: 99px; }
+.bar-val { width: 52px; text-align: right; color: #1d2129; font-weight: 600; flex-shrink: 0; }
+.acc-item {
+  border: 1px solid #e5e6eb;
+  border-radius: 10px;
+  margin-bottom: 8px;
+  overflow: hidden;
+  background: #fafbfc;
+}
+.acc-header {
+  padding: 10px 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #ffffff;
+  user-select: none;
+}
+.acc-header:hover { background: #f7f9fc; }
+.acc-title { font-weight: 600; font-size: 13.5px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.acc-body { display: none; padding: 10px 12px; border-top: 1px solid #e5e6eb; font-size: 12.5px; background: #fcfdfe; }
+.acc-item.open .acc-body { display: block; }
+.acc-arrow { font-size: 12px; color: #86909c; transition: transform 0.2s; }
+.acc-item.open .acc-arrow { transform: rotate(180deg); }
+.badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.badge-valid { background: #e8ffea; color: #00b42a; }
+.badge-pending { background: #fff7e8; color: #ff7d00; }
+.badge-invalid { background: #f2f3f5; color: #86909c; }
+.badge-unknown { background: #e8f3ff; color: #165dff; }
+.sub-tag {
+  display: inline-block;
+  padding: 3px 8px;
+  margin: 3px 4px 3px 0;
+  background: #fff;
+  border: 1px solid #d9e1ec;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.filter-bar { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+.filter-pill {
+  padding: 4px 10px;
+  border-radius: 99px;
+  font-size: 12px;
+  border: 1px solid #e5e6eb;
+  background: #fff;
+  cursor: pointer;
+  color: #4e5969;
+}
+.filter-pill.active { background: #165dff; color: #fff; border-color: #165dff; font-weight: 600; }
+.pat-card {
+  border: 1px solid #e5e6eb;
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 10px;
+  background: #fff;
+  transition: box-shadow 0.2s;
+}
+.pat-card:hover { box-shadow: 0 3px 10px rgba(22,93,255,0.08); }
+.pat-main-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.pat-info-col { flex: 1; min-width: 0; }
+.pat-thumb-box {
+  flex-shrink: 0;
+  width: 104px;
+  height: 78px;
+  border: 1px solid #e5e6eb;
+  border-radius: 8px;
+  background: #f8fafc;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+  cursor: zoom-in;
+}
+.pat-thumb-box img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 3px;
+}
+.pat-thumb-tag {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  background: rgba(29,33,41,0.68);
+  color: #fff;
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  pointer-events: none;
+}
+.pat-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 6px; }
+.pat-num { font-family: monospace; font-weight: 700; color: #165dff; font-size: 13px; background: #e8f3ff; padding: 2px 6px; border-radius: 4px; }
+.pat-title { font-weight: 600; font-size: 14px; color: #1d2129; margin-bottom: 4px; }
+.pat-meta { font-size: 12px; color: #86909c; display: flex; flex-wrap: wrap; gap: 10px; }
+.pat-abs {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #e5e6eb;
+  font-size: 12.5px;
+  color: #4e5969;
+  display: none;
+}
+.pat-card.open .pat-abs { display: block; }
+.pat-abs-fig {
+  margin-top: 8px;
+  padding: 8px;
+  background: #f8fafc;
+  border: 1px solid #e5e6eb;
+  border-radius: 8px;
+  text-align: center;
+}
+.pat-abs-fig img {
+  max-width: 100%;
+  max-height: 220px;
+  object-fit: contain;
+  cursor: zoom-in;
+  border-radius: 4px;
+  background: #fff;
+}
+.fig-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+.fig-card {
+  border: 1px solid #e5e6eb;
+  border-radius: 8px;
+  padding: 8px;
+  background: #fff;
+  text-align: center;
+}
+.fig-card img {
+  max-width: 100%;
+  max-height: 220px;
+  object-fit: contain;
+  cursor: zoom-in;
+  border-radius: 4px;
+}
+.fig-cap { font-size: 12px; color: #4e5969; margin-top: 6px; text-align: left; }
+.lightbox {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.88);
+  z-index: 999;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  padding: 16px;
+}
+.lightbox.open { display: flex; }
+.lightbox img { max-width: 96vw; max-height: 82vh; object-fit: contain; background: #fff; border-radius: 8px; padding: 6px; }
+.lightbox-cap { color: #fff; font-size: 13px; margin-top: 10px; max-width: 90vw; text-align: center; }
+.btn-link {
+  display: inline-block;
+  background: #165dff;
+  color: #fff;
+  text-decoration: none;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.pdf-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: #eff4ff;
+  color: #165dff;
+  border: 1px solid #94bfff;
+  text-decoration: none;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  transition: all 0.15s;
+}
+.pdf-pill:hover {
+  background: #165dff;
+  color: #fff;
+  border-color: #165dff;
+}
+.sec-text { white-space: pre-line; font-size: 13px; color: #4e5969; line-height: 1.65; }
+.bi-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #eff4ff;
+  border: 1px solid #b8d4ff;
+  border-radius: 10px;
+  padding: 7px 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.bi-bar-label { font-size: 12.5px; font-weight: 600; color: #165dff; display: flex; align-items: center; gap: 4px; }
+.bi-switch-group { display: flex; gap: 6px; flex-wrap: wrap; }
+.bi-btn {
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  border: 1px solid #94bfff;
+  background: #ffffff;
+  color: #165dff;
+  cursor: pointer;
+  font-weight: 600;
+  transition: all 0.15s;
+}
+.bi-btn.active { background: #165dff; color: #ffffff; border-color: #165dff; }
+.bi-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+@media (max-width: 640px) {
+  .bi-pair { grid-template-columns: 1fr; }
+}
+body[data-lang-mode="cn"] .bi-pair,
+body[data-lang-mode="orig"] .bi-pair {
+  grid-template-columns: 1fr;
+}
+body[data-lang-mode="cn"] .bi-orig { display: none !important; }
+body[data-lang-mode="orig"] .bi-cn { display: none !important; }
+.bi-cn {
+  background: #f7faff;
+  border-left: 3px solid #165dff;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.bi-orig {
+  background: #f8fafc;
+  border-left: 3px solid #86909c;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.bi-tag {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-bottom: 4px;
+}
+.bi-tag-cn { background: #e8f3ff; color: #165dff; }
+.bi-tag-orig { background: #e5e6eb; color: #4e5969; }
+"""
+
+COMMON_JS = """
+function switchTab(group, tabId, btn) {
+  document.querySelectorAll('[data-tab-group="' + group + '"]').forEach(function(el) {
+    el.classList.remove('active');
+  });
+  document.querySelectorAll('[data-btn-group="' + group + '"]').forEach(function(el) {
+    el.classList.remove('active');
+  });
+  var target = document.getElementById(tabId);
+  if (target) target.classList.add('active');
+  if (btn) btn.classList.add('active');
+}
+function toggleAcc(el) {
+  el.parentElement.classList.toggle('open');
+}
+function filterPatents(statusKey, btn) {
+  document.querySelectorAll('.filter-pill').forEach(function(b) { b.classList.remove('active'); });
+  btn.classList.add('active');
+  document.querySelectorAll('.pat-card').forEach(function(card) {
+    if (statusKey === 'all' || card.getAttribute('data-status') === statusKey) {
+      card.style.display = 'block';
+    } else {
+      card.style.display = 'none';
+    }
+  });
+}
+function setLangMode(mode, btn) {
+  document.body.setAttribute('data-lang-mode', mode);
+  document.querySelectorAll('.bi-btn').forEach(function(b) { b.classList.remove('active'); });
+  if (btn) btn.classList.add('active');
+}
+function openLightbox(src, cap) {
+  var lb = document.getElementById('lightbox');
+  document.getElementById('lb-img').src = src;
+  document.getElementById('lb-cap').textContent = cap || '';
+  lb.classList.add('open');
+}
+function closeLightbox() {
+  document.getElementById('lightbox').classList.remove('open');
+}
+"""
+
+
+def _render_bi_block(cn_text: str, orig_text: str, is_bilingual: bool = False) -> str:
+    """渲染中外文双语对照块（若非外文或无译文则渲染普通单语块）"""
+    orig_s = (orig_text or "").strip()
+    cn_s = (cn_text or "").strip()
+    if is_bilingual and cn_s and cn_s != orig_s:
+        return (
+            f'<div class="bi-pair">'
+            f'  <div class="bi-cn">'
+            f'    <div class="bi-tag bi-tag-cn">🇨🇳 中文译文</div>'
+            f'    <div class="sec-text">{_esc(cn_s)}</div>'
+            f'  </div>'
+            f'  <div class="bi-orig">'
+            f'    <div class="bi-tag bi-tag-orig">🌐 外文原文</div>'
+            f'    <div class="sec-text">{_esc(orig_s or "暂无原文")}</div>'
+            f'  </div>'
+            f'</div>'
+        )
+    return f'<div class="sec-text">{_esc(orig_s or cn_s or "暂无内容")}</div>'
+
+
+def render_overview_html(
+    query_text: str,
+    total_count: int,
+    sample_count: int,
+    granted_count: int,
+    year_counter: dict,
+    auth_counter: dict,
+    inventor_counter: dict,
+    corp_analysis: dict,
+    enriched_top: list,
+    title_label: str = "专利概览看板",
+    summary_text: str = "",
+) -> str:
+    """生成主体/领域专利概览的单文件交互式 HTML 报告"""
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    grouped_corps = (corp_analysis or {}).get("grouped_corporations") or []
+    raw_curr = (corp_analysis or {}).get("raw_curr_counter") or {}
+
+    # 1. 年度趋势条形图 HTML
+    sorted_years = sorted(year_counter.items(), key=lambda x: x[0], reverse=True)[:8]
+    max_yr = max((v for _, v in sorted_years), default=1)
+    year_bars_html = []
+    for yr, cnt in sorted_years:
+        pct = int(round((cnt / max_yr) * 100)) if max_yr else 0
+        year_bars_html.append(
+            f'<div class="bar-row">'
+            f'<div class="bar-label">{_esc(yr)}年</div>'
+            f'<div class="bar-track"><div class="bar-fill" style="width:{pct}%"></div></div>'
+            f'<div class="bar-val">{cnt}件</div>'
+            f'</div>'
+        )
+
+    # 2. 受理局分布条形图
+    sorted_auth = auth_counter.most_common(6) if hasattr(auth_counter, "most_common") else []
+    max_auth = max((v for _, v in sorted_auth), default=1)
+    auth_bars_html = []
+    for auth, cnt in sorted_auth:
+        pct = int(round((cnt / max_auth) * 100)) if max_auth else 0
+        auth_bars_html.append(
+            f'<div class="bar-row">'
+            f'<div class="bar-label">{_esc(auth)}</div>'
+            f'<div class="bar-track"><div class="bar-fill" style="width:{pct}%;background:#00b42a"></div></div>'
+            f'<div class="bar-val">{cnt}件</div>'
+            f'</div>'
+        )
+
+    # 3. 集团公司树手风琴卡片
+    corp_acc_html = []
+    for idx, grp in enumerate(grouped_corps[:10], 1):
+        open_cls = " open" if idx <= 3 else ""
+        tot_num = grp["sum_member_totals"] if grp["member_count"] > 1 else grp["max_domain_total"]
+        subs_html = []
+        for sub in grp.get("sub_entities", []):
+            role_icon = "🏢" if ("核心" in sub["role"] or "母公司" in sub["role"]) else ("🌍" if re.match(r"^[A-Za-z0-9\s.,&-]+$", sub["name"]) else "🔗")
+            cnt_txt = f" ({sub['domain_count']}件)" if sub["domain_count"] is not None else (
+                f" (抽样{sub['sample_count']}件)" if sub["sample_count"] else ""
+            )
+            subs_html.append(
+                f'<span class="sub-tag">{role_icon} <strong>{_esc(sub["name"])}</strong>{_esc(cnt_txt)} <small style="color:#86909c">[{_esc(sub["role"])}]</small></span>'
+            )
+        corp_acc_html.append(
+            f'<div class="acc-item{open_cls}">'
+            f'  <div class="acc-header" onclick="toggleAcc(this)">'
+            f'    <div class="acc-title">'
+            f'      <span class="badge badge-unknown">#{idx}</span>'
+            f'      <span>{_esc(grp["group_label"])}</span>'
+            f'      <span class="badge badge-valid">领域约 {tot_num} 件</span>'
+            f'    </div>'
+            f'    <span class="acc-arrow">▼</span>'
+            f'  </div>'
+            f'  <div class="acc-body">'
+            f'    <div style="margin-bottom:4px;color:#4e5969;font-weight:600;">智慧芽公司树 (ANCS/ANS) 穿透关联主体明细：</div>'
+            f'    <div>{"".join(subs_html)}</div>'
+            f'  </div>'
+            f'</div>'
+        )
+
+    # 4. 原始申请人高频列表
+    raw_app_rows = []
+    if hasattr(raw_curr, "most_common"):
+        for name, cnt in raw_curr.most_common(12):
+            raw_app_rows.append(f'<span class="sub-tag">📌 {_esc(name)} <strong>({cnt}件)</strong></span>')
+
+    # 5. 核心发明人
+    inv_tags = []
+    if hasattr(inventor_counter, "most_common"):
+        for name, cnt in inventor_counter.most_common(12):
+            inv_tags.append(f'<span class="sub-tag">👤 {_esc(name)} ({cnt}件)</span>')
+
+    # 6. 代表专利卡片（含常驻摘要附图缩略图 + 官方 PDF 一键下载 + 中外文双语对照 + 点击展开完整摘要与大图 + 状态筛选）
+    pat_cards_html = []
+    for idx, p in enumerate(enriched_top, 1):
+        badge_html, status_key = _status_badge(p.get("legal_status", "未知"))
+        abs_text = p.get("abstract") or "（点击单篇精读可拉取完整说明书与附图）"
+        abs_cn = (p.get("abstract_cn") or "").strip()
+        title_orig = (p.get("title") or "").strip()
+        title_cn = (p.get("title_cn") or "").strip()
+        is_pat_bi = bool((title_cn and title_cn != title_orig) or (abs_cn and abs_cn != abs_text))
+        abs_img_url = p.get("abs_img_url") or ""
+        pdf_url = p.get("pdf_url") or ""
+        open_cls = " open" if idx <= 3 else ""
+        disp_title_for_cap = f"{title_cn} ({title_orig})" if (title_cn and title_cn != title_orig) else title_orig
+        cap_label = f"#{idx} {p.get('pn')} 《{disp_title_for_cap}》 摘要附图"
+
+        pdf_pill_html = ""
+        pdf_btn_html = ""
+        if pdf_url:
+            pdf_pill_html = (
+                f'<a class="pdf-pill" href="{_esc(pdf_url)}" target="_blank" onclick="event.stopPropagation()" title="在新窗口打开/下载官方 PDF 原文">'
+                f'📄 官方PDF'
+                f'</a>'
+            )
+            pdf_btn_html = (
+                f'<div style="margin-top:8px;text-align:right;">'
+                f'  <a class="btn-link" href="{_esc(pdf_url)}" target="_blank" onclick="event.stopPropagation()">📄 查看/下载 { _esc(p.get("pn")) } 官方 PDF 全文</a>'
+                f'</div>'
+            )
+
+        bi_pill_html = '<span class="badge badge-unknown">🌐 中外对照</span>' if is_pat_bi else ""
+        if title_cn and title_cn != title_orig:
+            title_block_html = (
+                f'<div class="pat-title">🇨🇳 {_esc(title_cn)}'
+                f'<div style="font-size:12px;color:#4e5969;font-weight:400;margin-top:2px;">🌐 {_esc(title_orig)}</div>'
+                f'</div>'
+            )
+        else:
+            title_block_html = f'<div class="pat-title">{_esc(title_orig)}</div>'
+
+        if abs_cn and abs_cn != abs_text:
+            abs_block_html = _render_bi_block(abs_cn, abs_text, True)
+        else:
+            abs_block_html = f'<div><strong>摘要：</strong>{_esc(abs_text)}</div>'
+
+        thumb_html = ""
+        abs_fig_html = ""
+        if abs_img_url:
+            thumb_html = (
+                f'<div class="pat-thumb-box" onclick="event.stopPropagation();openLightbox(\'{_esc(abs_img_url)}\', \'{_esc(cap_label)}\')" title="点击放大查看摘要附图">'
+                f'  <img src="{_esc(abs_img_url)}" alt="摘要附图" loading="lazy">'
+                f'  <span class="pat-thumb-tag">🔍附图</span>'
+                f'</div>'
+            )
+            abs_fig_html = (
+                f'<div class="pat-abs-fig" onclick="event.stopPropagation();openLightbox(\'{_esc(abs_img_url)}\', \'{_esc(cap_label)}\')">'
+                f'  <img src="{_esc(abs_img_url)}" alt="摘要附图" loading="lazy">'
+                f'  <div style="font-size:11.5px;color:#86909c;margin-top:4px;">🖼️ 摘要附图（点击图片全屏高清放大）</div>'
+                f'</div>'
+            )
+
+        pat_cards_html.append(
+            f'<div class="pat-card{open_cls}" data-status="{status_key}" onclick="this.classList.toggle(\'open\')" style="cursor:pointer">'
+            f'  <div class="pat-main-row">'
+            f'    <div class="pat-info-col">'
+            f'      <div class="pat-top">'
+            f'        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">'
+            f'          <span class="pat-num">#{idx} {_esc(p.get("pn"))}</span>'
+            f'          {badge_html}'
+            f'          {bi_pill_html}'
+            f'          {pdf_pill_html}'
+            f'        </div>'
+            f'      </div>'
+            f'      {title_block_html}'
+            f'      <div class="pat-meta">'
+            f'        <span>🏢 {_esc(p.get("current_assignee") or p.get("original_assignee"))}</span>'
+            f'        <span>📅 申请日: {_esc(p.get("apdt"))}</span>'
+            f'        <span style="color:#165dff">👉 点击展开/收起摘要与附图</span>'
+            f'      </div>'
+            f'    </div>'
+            f'    {thumb_html}'
+            f'  </div>'
+            f'  <div class="pat-abs">'
+            f'    {abs_block_html}'
+            f'    {abs_fig_html}'
+            f'    {pdf_btn_html}'
+            f'  </div>'
+            f'</div>'
+        )
+
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{_esc(title_label)} - 智慧芽专利看板</title>
+<style>{COMMON_CSS}</style>
+</head>
+<body>
+<div class="container">
+  <div class="hero">
+    <div class="hero-tag">智慧芽 PatSnap 移动端交互看板</div>
+    <h1>📊 {_esc(title_label)}</h1>
+    <div class="hero-meta">
+      <span>🔍 检索式: <code>{_esc(query_text)}</code></span>
+      <span>🕒 生成时间: {now_str}</span>
+    </div>
+    {f'<div class="hero-summary">{_esc(summary_text)}</div>' if summary_text else ''}
+  </div>
+
+  <div class="kpi-grid">
+    <div class="kpi-card"><div class="kpi-val">{total_count:,}</div><div class="kpi-lbl">全球命中专利总数</div></div>
+    <div class="kpi-card"><div class="kpi-val">{sample_count}</div><div class="kpi-lbl">深度抽样分析数</div></div>
+    <div class="kpi-card"><div class="kpi-val">{len(grouped_corps)}</div><div class="kpi-lbl">识别核心集团系</div></div>
+    <div class="kpi-card"><div class="kpi-val">{granted_count}</div><div class="kpi-lbl">抽样含授权(B)数</div></div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab-btn active" data-btn-group="main" onclick="switchTab('main','tab-corps',this)">🏢 集团与申请人</button>
+    <button class="tab-btn" data-btn-group="main" onclick="switchTab('main','tab-patents',this)">📑 代表专利({len(enriched_top)})</button>
+    <button class="tab-btn" data-btn-group="main" onclick="switchTab('main','tab-trends',this)">📈 趋势与团队</button>
+  </div>
+
+  <div id="tab-corps" class="tab-panel active" data-tab-group="main">
+    <div class="card">
+      <div class="card-title">
+        <span>🏢 主要申请主体（智慧芽公司树控股归并）</span>
+        <small style="font-weight:normal;color:#86909c">点击卡片展开/折叠子公司</small>
+      </div>
+      {"".join(corp_acc_html) if corp_acc_html else '<div style="color:#86909c">暂无集团归并数据</div>'}
+    </div>
+    <div class="card">
+      <div class="card-title"><span>📌 具体申请人原始高频分布（Top 12）</span></div>
+      <div>{"".join(raw_app_rows)}</div>
+    </div>
+  </div>
+
+  <div id="tab-patents" class="tab-panel" data-tab-group="main">
+    <div class="card">
+      <div class="card-title">
+        <span>📑 核心代表专利清单（已按申请号去重）</span>
+        <small style="font-weight:normal;color:#86909c">点击卡片展开摘要</small>
+      </div>
+      <div class="filter-bar">
+        <button class="filter-pill active" onclick="filterPatents('all',this)">全部 ({len(enriched_top)})</button>
+        <button class="filter-pill" onclick="filterPatents('valid',this)">🟢 仅看有效</button>
+        <button class="filter-pill" onclick="filterPatents('pending',this)">🟡 审中/PCT</button>
+        <button class="filter-pill" onclick="filterPatents('invalid',this)">⚪ 失效</button>
+      </div>
+      {"".join(pat_cards_html)}
+    </div>
+  </div>
+
+  <div id="tab-trends" class="tab-panel" data-tab-group="main">
+    <div class="card">
+      <div class="card-title"><span>📈 近年申请趋势分布（抽样）</span></div>
+      {"".join(year_bars_html)}
+    </div>
+    <div class="card">
+      <div class="card-title"><span>🌍 受理局/国家地区分布（抽样）</span></div>
+      {"".join(auth_bars_html)}
+    </div>
+    <div class="card">
+      <div class="card-title"><span>👥 核心发明人团队（高频研发骨干）</span></div>
+      <div>{"".join(inv_tags) if inv_tags else '暂无发明人数据'}</div>
+    </div>
+  </div>
+</div>
+
+<div id="lightbox" class="lightbox" onclick="closeLightbox()">
+  <img id="lb-img" src="" alt="放大预览">
+  <div id="lb-cap" class="lightbox-cap"></div>
+  <div style="color:#86909c;font-size:12px;margin-top:6px;">（点击任意位置关闭预览）</div>
+</div>
+
+<script>{COMMON_JS}</script>
+</body>
+</html>"""
+
+
+def render_detail_html(
+    pn: str,
+    apno: str,
+    pid: str,
+    title_str: str,
+    simple_status: str,
+    exdt: str,
+    assignees: list,
+    applicants: list,
+    inventors: list,
+    apdt: str,
+    pbdt: str,
+    abstract_str: str,
+    abs_img_url: str,
+    parsed_clms: dict,
+    parsed_desc: dict,
+    pdf_url: str = "",
+    family_list: list = None,
+    citation_list: list = None,
+    is_bilingual: bool = False,
+    title_cn: str = "",
+    abstract_cn: str = "",
+    parsed_clms_cn: dict = None,
+    parsed_desc_cn: dict = None,
+) -> str:
+    """生成单篇专利深度精读的单文件交互式 HTML 报告（含高清附图点击放大画廊与非中文专利中外文双语对照）"""
+    badge_html, _ = _status_badge(simple_status)
+    indep_clms = (parsed_clms or {}).get("independent") or []
+    dep_clms = (parsed_clms or {}).get("dependent") or []
+    indep_clms_cn = (parsed_clms_cn or {}).get("independent") or []
+    dep_clms_cn = (parsed_clms_cn or {}).get("dependent") or []
+    paired_figs = (parsed_desc or {}).get("paired_figures") or []
+    desc_cn_map = parsed_desc_cn or {}
+
+    # 独立权利要求（支持中外文对照）
+    indep_html = []
+    max_indep = max(len(indep_clms), len(indep_clms_cn)) if is_bilingual else len(indep_clms)
+    for idx in range(1, max_indep + 1):
+        ic_orig = indep_clms[idx - 1] if idx - 1 < len(indep_clms) else ""
+        ic_cn = indep_clms_cn[idx - 1] if idx - 1 < len(indep_clms_cn) else ""
+        body_html = _render_bi_block(ic_cn, ic_orig, is_bilingual)
+        indep_html.append(
+            f'<div class="acc-item open">'
+            f'  <div class="acc-header" onclick="toggleAcc(this)">'
+            f'    <div class="acc-title"><span class="badge badge-unknown">独立权利要求 #{idx}</span></div>'
+            f'    <span class="acc-arrow">▼</span>'
+            f'  </div>'
+            f'  <div class="acc-body">{body_html}</div>'
+            f'</div>'
+        )
+
+    # 从属权利要求（默认折叠，点击展开，支持逐项中外文对照）
+    dep_html = ""
+    max_dep = max(len(dep_clms), len(dep_clms_cn)) if is_bilingual else len(dep_clms)
+    if max_dep > 0:
+        dep_rows = []
+        for idx in range(max_dep):
+            dc_orig = dep_clms[idx] if idx < len(dep_clms) else ""
+            dc_cn = dep_clms_cn[idx] if idx < len(dep_clms_cn) else ""
+            dep_rows.append(
+                f'<div style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px dashed #e5e6eb">'
+                f'{_render_bi_block(dc_cn, dc_orig, is_bilingual)}'
+                f'</div>'
+            )
+        dep_html = (
+            f'<div class="acc-item">'
+            f'  <div class="acc-header" onclick="toggleAcc(this)">'
+            f'    <div class="acc-title"><span class="badge badge-invalid">从属权利要求（共 {max_dep} 项，点击展开全部）</span></div>'
+            f'    <span class="acc-arrow">▼</span>'
+            f'  </div>'
+            f'  <div class="acc-body">{"".join(dep_rows)}</div>'
+            f'</div>'
+        )
+
+    # 附图画廊（支持中外文图注对照）
+    figs_html = []
+    if abs_img_url:
+        figs_html.append(
+            f'<div class="fig-card">'
+            f'  <img src="{_esc(abs_img_url)}" alt="摘要附图" onclick="openLightbox(this.src, \'摘要附图\')">'
+            f'  <div class="fig-cap"><strong>【摘要附图】</strong>（点击图片全屏放大）</div>'
+            f'</div>'
+        )
+    for fig in paired_figs:
+        cap_orig = fig.get("caption", "")
+        cap_cn = fig.get("caption_cn", "")
+        cap_full = f"{cap_cn} | {cap_orig}" if (is_bilingual and cap_cn and cap_cn != cap_orig) else cap_orig
+        cap_js = re.sub(r"['\"\\]", " ", cap_full)
+        if is_bilingual and cap_cn and cap_cn != cap_orig:
+            fig_cap_html = (
+                f'<div class="fig-cap">'
+                f'  <div class="bi-cn" style="padding:4px 6px;margin-bottom:4px;"><span class="bi-tag bi-tag-cn">🇨🇳 译</span> {_esc(cap_cn)}</div>'
+                f'  <div class="bi-orig" style="padding:4px 6px;"><span class="bi-tag bi-tag-orig">🌐 原</span> {_esc(cap_orig)}</div>'
+                f'</div>'
+            )
+        else:
+            fig_cap_html = f'<div class="fig-cap"><strong>{_esc(fig.get("title"))}</strong>：{_esc(cap_orig)}</div>'
+        figs_html.append(
+            f'<div class="fig-card">'
+            f'  <img src="{_esc(fig.get("url"))}" alt="{_esc(fig.get("title"))}" onclick="openLightbox(this.src, \'{_esc(cap_js)}\')">'
+            f'  {fig_cap_html}'
+            f'</div>'
+        )
+
+    pdf_btn = f'<a class="btn-link" href="{_esc(pdf_url)}" target="_blank">📄 下载官方 PDF 全文</a>' if pdf_url else ""
+
+    # 标题与双语切换栏
+    bi_hero_badge = '<span class="badge" style="background:rgba(255,255,255,0.22);color:#fff">🌐 中外文对照</span>' if is_bilingual else ""
+    if is_bilingual and title_cn and title_cn.strip() != title_str.strip():
+        hero_title_html = (
+            f'<h1>🇨🇳 {_esc(title_cn)}</h1>'
+            f'<div style="font-size:13.5px;opacity:0.92;margin-bottom:8px;font-weight:500;">🌐 原文：{_esc(title_str)}</div>'
+        )
+        page_title = f"{pn} - {title_cn} ({title_str})"
+    else:
+        hero_title_html = f'<h1>{_esc(title_str)}</h1>'
+        page_title = f"{pn} - {title_str}"
+
+    bi_switch_bar_html = ""
+    if is_bilingual:
+        bi_switch_bar_html = (
+            '<div class="bi-bar">'
+            '  <div class="bi-bar-label">🌐 检测到非中文专利，已开启中外文双语对照阅读：</div>'
+            '  <div class="bi-switch-group">'
+            '    <button class="bi-btn active" onclick="setLangMode(\'both\',this)">🔀 中外对照</button>'
+            '    <button class="bi-btn" onclick="setLangMode(\'cn\',this)">🇨🇳 仅看中文</button>'
+            '    <button class="bi-btn" onclick="setLangMode(\'orig\',this)">🌐 仅看原文</button>'
+            '  </div>'
+            '</div>'
+        )
+
+    # 说明书各章节中外文拼接
+    tf_orig = (parsed_desc or {}).get("technical_field") or ""
+    bg_orig = (parsed_desc or {}).get("background") or ""
+    full_bg_orig = (f"【技术领域】\n{tf_orig}\n\n【背景技术】\n{bg_orig}".strip() if tf_orig else bg_orig) or "暂无背景技术段落"
+
+    tf_cn = desc_cn_map.get("technical_field") or ""
+    bg_cn = desc_cn_map.get("background") or ""
+    full_bg_cn = (f"【技术领域】\n{tf_cn}\n\n【背景技术】\n{bg_cn}".strip() if tf_cn else bg_cn)
+
+    sum_orig = (parsed_desc or {}).get("summary") or "暂无发明内容段落"
+    sum_cn = desc_cn_map.get("summary") or ""
+
+    emb_orig = ((parsed_desc or {}).get("embodiments") or "暂无具体实施方式")[:8000]
+    emb_cn = (desc_cn_map.get("embodiments") or "")[:8000]
+
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{_esc(page_title)}</title>
+<style>{COMMON_CSS}</style>
+</head>
+<body data-lang-mode="both">
+<div class="container">
+  <div class="hero">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:6px;">
+      <div style="display:flex;align-items:center;gap:6px;">
+        <span class="hero-tag" style="margin-bottom:0">单篇专利精读看板 · {_esc(pn)}</span>
+        {bi_hero_badge}
+      </div>
+      {badge_html}
+    </div>
+    {hero_title_html}
+    <div class="hero-meta">
+      <span>🏢 当前权利人: {_esc("、".join(assignees or applicants) or "未知")}</span>
+      <span>📅 申请日: {_esc(apdt)}</span>
+      <span>📅 公开日: {_esc(pbdt)}</span>
+      <span>⏳ 预计到期: {_esc(exdt)}</span>
+    </div>
+    <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <span style="font-size:12px;opacity:0.9">👤 发明人: {_esc("、".join(inventors[:8]) or "未知")}</span>
+      {pdf_btn}
+    </div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab-btn active" data-btn-group="dt" onclick="switchTab('dt','tab-summary',this)">💡 简述与附图({len(figs_html)})</button>
+    <button class="tab-btn" data-btn-group="dt" onclick="switchTab('dt','tab-claims',this)">⚖️ 权利要求</button>
+    <button class="tab-btn" data-btn-group="dt" onclick="switchTab('dt','tab-desc',this)">📖 说明书关键段</button>
+  </div>
+
+  {bi_switch_bar_html}
+
+  <div id="tab-summary" class="tab-panel active" data-tab-group="dt">
+    <div class="card">
+      <div class="card-title"><span>📝 {'专利摘要（中外文对照）' if is_bilingual else '专利摘要原文'}</span></div>
+      {_render_bi_block(abstract_cn, abstract_str, is_bilingual)}
+    </div>
+    <div class="card">
+      <div class="card-title">
+        <span>🖼️ 摘要附图与配对全文附图画廊</span>
+        <small style="font-weight:normal;color:#86909c">点击任意附图可全屏高清放大</small>
+      </div>
+      <div class="fig-grid">
+        {"".join(figs_html) if figs_html else '<div style="color:#86909c">暂无附图数据</div>'}
+      </div>
+    </div>
+  </div>
+
+  <div id="tab-claims" class="tab-panel" data-tab-group="dt">
+    <div class="card">
+      <div class="card-title"><span>⚖️ {'独立权利要求与从属权利要求拆解（中外文对照）' if is_bilingual else '独立权利要求与从属权利要求拆解'}</span></div>
+      {"".join(indep_html) if indep_html else '<div style="color:#86909c">暂无权利要求文本</div>'}
+      {dep_html}
+    </div>
+  </div>
+
+  <div id="tab-desc" class="tab-panel" data-tab-group="dt">
+    <div class="card">
+      <div class="card-title"><span>🎯 {'技术领域与背景技术（中外文对照）' if is_bilingual else '背景技术与行业痛点'}</span></div>
+      {_render_bi_block(full_bg_cn, full_bg_orig, is_bilingual)}
+    </div>
+    <div class="card">
+      <div class="card-title"><span>🚀 {'发明内容与有益效果（中外文对照）' if is_bilingual else '发明内容与有益效果'}</span></div>
+      {_render_bi_block(sum_cn, sum_orig, is_bilingual)}
+    </div>
+    <div class="card">
+      <div class="card-title"><span>🔧 {'具体实施方式（中外文对照，点击展开/收起）' if is_bilingual else '具体实施方式（全文折叠保护，点击展开）'}</span></div>
+      <div class="acc-item open">
+        <div class="acc-header" onclick="toggleAcc(this)">
+          <div class="acc-title">点击展开/收起【具体实施方式】段落</div>
+          <span class="acc-arrow">▼</span>
+        </div>
+        <div class="acc-body">{_render_bi_block(emb_cn, emb_orig, is_bilingual)}</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="lightbox" class="lightbox" onclick="closeLightbox()">
+  <img id="lb-img" src="" alt="放大预览">
+  <div id="lb-cap" class="lightbox-cap"></div>
+</div>
+<script>{COMMON_JS}</script>
+</body>
+</html>"""
