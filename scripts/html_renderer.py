@@ -588,8 +588,15 @@ def render_overview_html(
 
     # 3. 核心技术领域构成 (IPC) 条形图
     tech_bars_html = []
+    lead_ipc_val = ""
+    lead_ipc_lbl = ""
     if tech_list:
         max_tech = max((item.get("num", 0) for item in tech_list), default=1)
+        lead_ipc = tech_list[0].get("ipc", "")
+        lead_cnt = tech_list[0].get("num", 0)
+        lead_pct = f"{round(lead_cnt / total_count * 100, 1)}%" if total_count else ""
+        lead_ipc_val = f"{lead_ipc} ({lead_pct})"
+        lead_ipc_lbl = f"主导技术大类 (全量IPC)"
         for item in tech_list[:8]:
             ipc = item.get("ipc", "")
             cnt = item.get("num", 0)
@@ -603,6 +610,9 @@ def render_overview_html(
                 f'</div>'
                 f'<div style="font-size:11.5px;color:#86909c;margin:-2px 0 8px 0;line-height:1.35;">{_esc(desc[:65])}</div>'
             )
+    else:
+        lead_ipc_val = f"{len(grouped_corps)} 个"
+        lead_ipc_lbl = "识别核心集团系"
 
     # 4. 集团公司树手风琴卡片
     corp_acc_html = []
@@ -762,15 +772,15 @@ def render_overview_html(
   </div>
 
   <div class="kpi-grid">
-    <div class="kpi-card"><div class="kpi-val">{total_count:,}</div><div class="kpi-lbl">全球命中专利总数</div></div>
-    <div class="kpi-card"><div class="kpi-val">{sample_count}</div><div class="kpi-lbl">深度穿透分析数</div></div>
-    <div class="kpi-card"><div class="kpi-val">{len(grouped_corps)}</div><div class="kpi-lbl">识别核心集团系</div></div>
-    {f'<div class="kpi-card"><div class="kpi-val">{grant_rate_str}</div><div class="kpi-lbl">全库近十年授权率</div></div>' if grant_rate_str else f'<div class="kpi-card"><div class="kpi-val">{granted_count}</div><div class="kpi-lbl">抽样含授权(B)数</div></div>'}
+    <div class="kpi-card"><div class="kpi-val">{total_count:,}</div><div class="kpi-lbl">全球检索命中总数</div></div>
+    <div class="kpi-card"><div class="kpi-val">{lead_ipc_val}</div><div class="kpi-lbl">{lead_ipc_lbl}</div></div>
+    <div class="kpi-card"><div class="kpi-val">{len(grouped_corps)} 个</div><div class="kpi-lbl">穿透核心集团系</div></div>
+    {f'<div class="kpi-card"><div class="kpi-val">{grant_rate_str}</div><div class="kpi-lbl">全库近十年授权率</div></div>' if grant_rate_str else f'<div class="kpi-card"><div class="kpi-val">{granted_count}</div><div class="kpi-lbl">抽样含授权(B)数*</div></div>'}
   </div>
 
   <div class="tabs">
     <button class="tab-btn active" data-btn-group="main" onclick="switchTab('main','tab-corps',this)">🏢 集团与申请人</button>
-    <button class="tab-btn" data-btn-group="main" onclick="switchTab('main','tab-patents',this)">📑 代表专利({len(enriched_top)})</button>
+    <button class="tab-btn" data-btn-group="main" onclick="switchTab('main','tab-patents',this)">📑 代表专利*({len(enriched_top)})</button>
     <button class="tab-btn" data-btn-group="main" onclick="switchTab('main','tab-trends',this)">📈 趋势与领域</button>
   </div>
 
@@ -791,9 +801,10 @@ def render_overview_html(
   <div id="tab-patents" class="tab-panel" data-tab-group="main">
     <div class="card">
       <div class="card-title">
-        <span>📑 核心代表专利清单（已按申请号去重）</span>
+        <span>📑 核心代表专利精选*（已按申请号去重）</span>
         <small style="font-weight:normal;color:#86909c">点击卡片展开摘要</small>
       </div>
+      <div style="font-size:12px;color:#86909c;margin:-4px 0 10px 0;">* 遴选自当前检索高相关专利样本池（Top {sample_count}），优先覆盖各核心集团授权作与高清附图</div>
       <div class="filter-bar">
         <button class="filter-pill active" onclick="filterPatents('all',this)">全部 ({len(enriched_top)})</button>
         <button class="filter-pill" onclick="filterPatents('valid',this)">🟢 仅看有效</button>
@@ -806,21 +817,25 @@ def render_overview_html(
 
   <div id="tab-trends" class="tab-panel" data-tab-group="main">
     <div class="card">
-      <div class="card-title"><span>📈 近十年申请趋势与授权统计（全量无抽样）</span></div>
+      <div class="card-title"><span>📈 近十年申请趋势与授权统计（官方全量无抽样）</span></div>
       {"".join(year_bars_html)}
     </div>
     {f'''<div class="card">
-      <div class="card-title"><span>🧩 核心技术领域构成（全量 IPC 分析）</span></div>
+      <div class="card-title"><span>🧩 核心技术领域构成（官方全量 IPC 分析）</span></div>
       {''.join(tech_bars_html)}
     </div>''' if tech_bars_html else ''}
     <div class="card">
-      <div class="card-title"><span>🌍 受理局/国家地区分布（全量统计）</span></div>
+      <div class="card-title"><span>🌍 受理局/国家地区分布（官方全量统计）</span></div>
       {"".join(auth_bars_html)}
     </div>
     <div class="card">
-      <div class="card-title"><span>👥 核心发明人团队（高频研发骨干）</span></div>
+      <div class="card-title"><span>👥 核心发明人团队*（高频研发骨干画像）</span></div>
+      <div style="font-size:12px;color:#86909c;margin-bottom:8px;">* 该项基于 Top {sample_count} 高相关代表专利抽样提取，非全量发明人枚举</div>
       <div>{"".join(inv_tags) if inv_tags else '暂无发明人数据'}</div>
     </div>
+  </div>
+  <div style="margin-top:14px;font-size:11.5px;color:#86909c;text-align:center;line-height:1.6;">
+    * 标注项基于 Top {sample_count} 高相关代表专利样本池精选与分析；检索总量、逐年趋势、授权率、IPC 分布及 Top 10 申请人均为智慧芽官方全库全量聚合计算（零抽样偏差）。
   </div>
 </div>
 

@@ -1043,13 +1043,14 @@ def cmd_overview(args: argparse.Namespace) -> None:
         corp_analysis = {"grouped_corporations": [], "raw_curr_counter": Counter(), "sample_size": len(results)}
 
     if "C" in modules:
-        print("## [模块 C] 核心发明人团队（高频研发骨干）")
-        top_invs = [f"**{name}** ({cnt}件)" for name, cnt in inventor_counter.most_common(10)]
-        print("- " + ("、".join(top_invs) if top_invs else "暂无发明人数据") + "\n")
+        print(f"## [模块 C] 核心发明人团队*（基于 Top {len(results)} 高相关专利样本抽样画像）")
+        top_invs = [f"**{name}** ({cnt}件*)" for name, cnt in inventor_counter.most_common(10)]
+        print("- " + ("、".join(top_invs) if top_invs else "暂无发明人数据"))
+        print("- *注：智慧芽未开放全库发明人排行接口，该项基于当前高相关代表专利抽样提取，非全库全量枚举\n")
 
     if "F" in modules:
-        print("## [模块 F] 受理局与区域分布（抽样统计）")
-        auth_str = " | ".join(f"{k}: {v}件" for k, v in auth_counter.most_common())
+        print("## [模块 F] 受理局与区域分布（官方全量统计）")
+        auth_str = " | ".join(f"{k}: {v}件" for k, v in auth_counter.most_common(8))
         print(f"- **受理局分布**：{auth_str}\n")
 
     # 3. 代表专利多样性与头部集团联动遴选：
@@ -1183,7 +1184,8 @@ def cmd_overview(args: argparse.Namespace) -> None:
         enriched_top = list(executor.map(enrich_patent, top_patents))
 
     if "D" in modules:
-        print(f"## [模块 D] 核心代表专利列表（Top {len(enriched_top)}）")
+        print(f"## [模块 D] 核心代表专利精选*（Top {len(enriched_top)}）")
+        print(f"- *注：遴选自当前检索高相关代表专利池（Top {len(results)}），优先覆盖各集团核心授权件与高清附图\n")
         print("| 序号 | 公开(公告)号 | 专利标题（非中文含中外对照） | 当前权利人 | 申请日 | 法律状态 |" + (" 被引次数 |" if "G" in modules else ""))
         print("| :--- | :--- | :--- | :--- | :--- | :--- |" + (" :--- |" if "G" in modules else ""))
         for idx, p in enumerate(enriched_top, 1):
