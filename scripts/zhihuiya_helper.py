@@ -328,8 +328,8 @@ def analyze_corporate_tree_and_applicants(
                     direct_co_links.setdefault(u, Counter())[v] += 1
                     direct_co_links.setdefault(v, Counter())[u] += 1
 
-    # 选取 Top 12 候选企业主体进行智慧芽公司树 (ANCS/ANS) 深度穿透探测
-    top_corps = [name for name, _ in corp_candidates.most_common(12)]
+    # 选取 Top 24 候选企业主体进行智慧芽公司树 (ANCS/ANS) 深度穿透探测（覆盖中外主流竞争对手）
+    top_corps = [name for name, _ in corp_candidates.most_common(24)]
 
     def probe_corporate_tree(entity_name: str) -> dict:
         # 构造安全的精确短语查询词（HTTP JSON 直传无需担心 Shell 引号转义，用双引号确保不会因通用英文词误匹配无关企业）
@@ -368,7 +368,7 @@ def analyze_corporate_tree_and_applicants(
 
     probed_list = []
     if top_corps:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
             probed_list = list(executor.map(probe_corporate_tree, top_corps))
 
     # 若某个子公司在 ANCS 公司树中穿透发现了更高频的母公司（不在 top_corps 中），补充探测母公司在该领域的总量
@@ -450,7 +450,7 @@ def analyze_corporate_tree_and_applicants(
 
         hq_score = 0
         if not is_en:
-            hq_score += 50
+            hq_score += 150  # 优先采用本土中文母公司抬头，避免外文申报主体反客为主
         if raw_cnt > 0:
             hq_score += 80
         if is_listed_or_group:
