@@ -311,7 +311,7 @@ def build_patsnap_query(company: str = "", keyword: str = "", raw_query: str = "
 
 
 def analyze_corporate_tree_and_applicants(
-    sample_results: list, base_query: str, company_filter: str = "", seed_corps: list = None
+    sample_results: list, base_query: str, company_filter: str = "", seed_corps: list = None, total_count: int = 0
 ) -> dict:
     """
     利用智慧芽公司树 (ANCS / ANS) 及权利流转/合申共现关系，
@@ -582,12 +582,16 @@ def analyze_corporate_tree_and_applicants(
                     })
 
         sum_distinct_subs = sum(m["domain_total"] for m in member_infos)
+        raw_sum = sum_distinct_subs if len(member_infos) > 1 else max_dom_total
+        # 若为企业全景检索，单集团各成员求和若超过全库检索总数（因母子公司联合申请/树交集重叠），去重基准受限于总库总量
+        deduped_group_total = min(raw_sum, total_count) if (total_count and raw_sum > total_count) else raw_sum
         grouped_corporations.append({
             "group_label": f"{brand_label}系（{primary_name}）" if brand_label != primary_name else primary_name,
             "primary_entity": primary_name,
             "primary_domain_total": primary_dom_total,
             "max_domain_total": max_dom_total,
-            "sum_member_totals": sum_distinct_subs if len(member_infos) > 1 else max_dom_total,
+            "sum_member_totals": deduped_group_total,
+            "filing_instances": raw_sum,
             "member_count": len(member_infos),
             "sub_entities": sub_entities[:10],
         })
@@ -992,7 +996,7 @@ def cmd_overview(args: argparse.Namespace) -> None:
 
     if "B" in modules:
         print("## [模块 B] 主要申请人与主要申请主体识别（智慧芽全量排行 + 公司树控股穿透）")
-        corp_analysis = analyze_corporate_tree_and_applicants(results, query_text, args.company, seed_corps=seed_corps)
+        corp_analysis = analyze_corporate_tree_and_applicants(results, query_text, args.company, seed_corps=seed_corps, total_count=total_count)
         grouped_corps = corp_analysis["grouped_corporations"]
 
         if grouped_corps:
@@ -1001,6 +1005,13 @@ def cmd_overview(args: argparse.Namespace) -> None:
             print("| :--- | :--- | :--- | :--- |")
             for idx, grp in enumerate(grouped_corps[:8], 1):
                 tot_num = grp["sum_member_totals"] if grp["member_count"] > 1 else grp["max_domain_total"]
+                filing_inst = grp.get("filing_instances", tot_num)
+                if filing_inst > tot_num:
+                    tot_label = f"全景排重约 {tot_num:,}件 (成员累计申报 {filing_inst:,}件次)"
+                elif grp["member_count"] > 1:
+                    tot_label = f"{tot_num:,}件次 (含联合申请)"
+                else:
+                    tot_label = f"{tot_num:,}件"
                 core_ent = grp["primary_entity"]
                 other_subs = []
                 for sub in grp["sub_entities"]:
@@ -1013,7 +1024,7 @@ def cmd_overview(args: argparse.Namespace) -> None:
                     other_subs.append(f"{icon}`{sub['name']}`{cnt_s}")
                 subs_col = " 、 ".join(other_subs) if other_subs else "单一核心主体直接申请"
                 prim_cnt = grp.get("primary_domain_total", grp["max_domain_total"])
-                print(f"| **#{idx}** | **{grp['group_label']}** (`{tot_num}件`) | `{core_ent}` (`{prim_cnt}件`) | {subs_col} |")
+                print(f"| **#{idx}** | **{grp['group_label']}** (`{tot_label}`) | `{core_ent}` (`{prim_cnt}件`) | {subs_col} |")
             print()
 
         if rank_values:

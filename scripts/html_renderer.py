@@ -619,6 +619,14 @@ def render_overview_html(
     for idx, grp in enumerate(grouped_corps[:10], 1):
         open_cls = " open" if idx <= 3 else ""
         tot_num = grp["sum_member_totals"] if grp["member_count"] > 1 else grp["max_domain_total"]
+        filing_inst = grp.get("filing_instances", tot_num)
+        if filing_inst > tot_num:
+            badge_cnt_html = f'<span class="badge badge-valid">全景排重约 {tot_num:,} 件 <small style="font-weight:400;opacity:0.85">(成员累计申报 {filing_inst:,} 件次)</small></span>'
+        elif grp["member_count"] > 1 and tot_num != grp.get("primary_domain_total"):
+            badge_cnt_html = f'<span class="badge badge-valid">领域约 {tot_num:,} 件次 <small style="font-weight:400;opacity:0.85">(含联合申请)</small></span>'
+        else:
+            badge_cnt_html = f'<span class="badge badge-valid">领域约 {tot_num:,} 件</span>'
+
         subs_html = []
         for sub in grp.get("sub_entities", []):
             role_icon = "🏢" if ("核心" in sub["role"] or "母公司" in sub["role"]) else ("🌍" if re.match(r"^[A-Za-z0-9\s.,&-]+$", sub["name"]) else "🔗")
@@ -634,7 +642,7 @@ def render_overview_html(
             f'    <div class="acc-title">'
             f'      <span class="badge badge-unknown">#{idx}</span>'
             f'      <span>{_esc(grp["group_label"])}</span>'
-            f'      <span class="badge badge-valid">领域约 {tot_num} 件</span>'
+            f'      {badge_cnt_html}'
             f'    </div>'
             f'    <span class="acc-arrow">▼</span>'
             f'  </div>'
@@ -769,6 +777,14 @@ def render_overview_html(
       <span>🕒 生成时间: {now_str}</span>
     </div>
     {f'<div class="hero-summary">{_esc(summary_text)}</div>' if summary_text else ''}
+  </div>
+
+  <div style="background:#eef4ff;border:1px solid #adc6ff;border-radius:10px;padding:9px 12px;margin-bottom:12px;font-size:12px;color:#1d39c4;line-height:1.55;">
+    <div style="font-weight:700;margin-bottom:3px;display:flex;align-items:center;gap:4px;">
+      <span>📌 数据统计与分析口径声明</span>
+    </div>
+    <div>• <strong>基准去重总库（{total_count:,} 件）</strong>：当前检索式命中全球唯一专利总量（已剔除跨主体/联合申请重复件），全量趋势、IPC构成、近十年授权率及抽样池均以此为唯一基准。</div>
+    <div style="margin-top:2px;">• <strong>穿透微观分析池*（{sample_count} 件）</strong>：基于基准总库按综合权重抽样前 {sample_count} 篇进行多模态附图对齐、代表专利精选及核心团队画像分析（标 * 所示）。</div>
   </div>
 
   <div class="kpi-grid">
