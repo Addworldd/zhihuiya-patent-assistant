@@ -58,40 +58,118 @@ description: >-
 
 ## 核心规范：专利检索式基本拆分与中英文同义扩展法则（必读 SOP）
 
-在执行 `overview` 概览检索前，**严禁直接将用户的中文长词原封不动作为单一短语查询**（例如直接查 `TAC:(智能猫砂盆)` 会漏掉 90% 写作“自动猫厕所/电动宠物厕所/Self-cleaning litter box”的中外专利），也**严禁使用过于泛化的单字导致结果跑偏**。模型必须先按以下 **3 步法则** 构建高查准、高召回的中英文检索式，并通过 `--raw-query` 传给脚本：
+在执行 `overview` 概览检索前，**严禁直接将用户的中文长词原封不动作为单一短语查询**（例如直接查 `TAC:(智能猫砂盆)` 会漏掉 90% 写作“自动猫厕所/电动宠物厕所/Self-cleaning litter box”的中外专利），也**严禁使用过于泛化的单字导致结果跑偏**。模型必须先按以下 **多维度要素拆分法则** 构建高查准、高召回的中英文检索式，并通过 `--raw-query` 传给脚本：
 
-### 1. 正交要素块拆分（Block Decomposition）
-将用户查询拆分为 2~3 个正交逻辑块，块与块之间用 **`AND`** 连接，块内同义词用 **`OR`** 连接：
+### 1. 多维度检索要素块拆分（Multi-Factor Block Decomposition）
+将用户复杂的自然语言查询解构为正交的条件块，各逻辑块之间一律使用 **`AND`** 组合，块内同义词/同级条件使用 **`OR`** 连接：
+
 - **【主体块 Block 0（若指定了公司/品牌）】**：
   - **法则 ①（简称还原工商全称 + 子公司字号）**：专利申请人填写的均是工商注册全称而非股票简称（如“工业富联”的注册全称是“富士康工业互联网股份有限公司”，旗下子公司统一冠以“富联”字号）。因此必须同时包含 **「企业简称 + 工商注册全称核心词 + 旗下子公司通用字号 + 英文标准名」**。
   - **法则 ②（严禁向上泛化至母集团）**：若用户查询的是大型集团旗下的独立上市子公司或子品牌（如查“工业富联”、“添可”、“富智康”），**严禁将其上级母集团商号（如“富士康/鸿海”、“科沃斯”）直接用 `OR` 放进检索式**，否则会把整个母集团数万件无关专利混入总量！
   - **公式**：`(ANCS:(工商全称核心词 OR 企业简称 OR 英文标准名) OR ANS:(工商全称核心词 OR 企业简称 OR 英文标准名) OR ANC:(工商全称核心词 OR 企业简称 OR 子公司核心字号 OR 英文标准名))`
   - **示例（查“工业富联”）**：`(ANCS:(富士康工业互联网 OR 工业富联 OR (FOXCONN AND INDUSTRIAL AND INTERNET)) OR ANS:(富士康工业互联网 OR 工业富联 OR (FOXCONN AND INDUSTRIAL AND INTERNET)) OR ANC:(富士康工业互联网 OR 工业富联 OR 富联裕展 OR 富联精密 OR 富联科技 OR 富桂精密 OR (FOXCONN AND INDUSTRIAL AND INTERNET)))`（切勿写 `OR 富士康`）
+
 - **【核心载体/产品块 Block A（必选，决定查准率的核心锚点）】**：
   - 提取具体的产品、部件或核心材料名称（剔除“领域/方向/情况/智能/新型”等虚词）。
   - **必须同步扩展：中文标准词 + 中文行业俗称/上下位词 + 英文核心词 + 英文同义词**。
   - **字段强约束**：Block A 必须限定在 **`TAC:(...)`**（标题/摘要/权利要求）中，**严禁对泛化词使用全文 `ALL`**，确保命中的每篇专利核心主题 100% 聚焦在该产品/载体上，不发生领域偏移！
+
 - **【技术特征/功能修饰块 Block B（按需，决定技术聚焦度）】**：
   - 提取修饰限定词或具体技术手段（如“智能/自动清理”、“水路温控”、“防缠绕”）。
   - **同样执行中英文双语扩展**，并与 Block A 用 `AND` 组合。
 
-### 2. 命令行安全语法与防偏差铁律
-- **英文多词短语免引号写法**：在命令行传参时，英文多词短语（如 `cat litter`、`eight sleep`、`solid electrolyte`）统一写成括号内 `AND` 连接：`(cat AND litter)`、`(eight AND sleep)`，既彻底规避 Shell 双引号转义报错，又能兼容词序变化。
-- **禁止单字泛化**：切勿将“盆”、“垫”、“器”、“车”等单字或“智能”、“控制”、“方法”等纯通用词单独作为检索块。
+- **【时间/日期范围限定块 Block C（若涉及申请日/公开日/年份）】**：
+  - **申请日限定（最常用、最核心）**：`APD:[START TO END]`
+    - ① **指定历史区间（XX-XX年）**：`APD:[2018 TO 2023]`
+    - ② **XX年前 / 早期历史（如“2020年以前/前”）**：`APD:[* TO 2020]`（或精确到日 `APD:[* TO 20201231]`）
+    - ③ **XX年以后 / 近N年（如“2021年以后申请/近5年”）**：`APD:[2021 TO *]`
+    - ④ **某一具体年份（如“2022年申请的”）**：`APD:2022` 或 `APD:[2022 TO 2022]`
+  - **公开日/公告日限定**：`PBD:[START TO END]`
+    - ① **公开日区间**：`PBD:[2023 TO 2024]`
+    - ② **最新公开（如近一年内公开）**：`PBD:[2024 TO *]`
 
-### 3. 标准拆分与中英扩展范例（模型请参照此颗粒度生成 `--raw-query`）
-- **范例 1（用户输入：“智能猫砂盆领域”）**：
-  - 拆分：`Block A(猫砂盆/猫厕所)` + `Block B(智能/自动/自清洁/铲屎)`
+- **【技术分类号限定块 Block D（若指定了 IPC / CPC 分类）】**：
+  - 国际分类号 IPC（支持通配符 `*`）：`IPC:(G06F*)`、`IPC:(A01K*)`
+  - 多个分类或组合：`IPC:(G06F OR B65G)`
+  - 联合分类号 CPC：`CPC:(Y02E10/00*)`
+
+- **【国家/受理局限定块 Block E（若指定了地域范围）】**：
+  - **仅看中国专利**：`PN:(CN*)`
+  - **仅看美国专利**：`PN:(US*)`
+  - **仅看欧洲专利**：`PN:(EP*)`
+  - **仅看日本专利**：`PN:(JP*)`
+  - **多地区组合**：`PN:(CN* OR US* OR EP*)`
+  - ⚠️ **避坑铁律**：智慧芽 OpenAPI 不支持 `PNC:(CN)`，国家限定必须统一写作 `PN:(国家代码*)`！
+
+- **【发明人限定块 Block F（若指定了发明人姓名）】**：
+  - 中文姓名：`IN:(李云峰)`
+  - 英文多词姓名：`IN:("John Smith")`
+  - 多位发明人或关系：`IN:(张三 OR 李四)`
+
+- **【仅看标题限定块 Block G（极端查准）】**：
+  - 若用户强调“标题必须带有XX”，使用 `TTL:(...)`，例如 `TTL:(固态电池)`（比 TAC 约束更严苛）。
+
+---
+
+### 2. 智慧芽高级检索常用字段与语法速查表
+
+| 字段代码 | 全称 / 字段含义 | 语法规范与示例 | 典型用户自然语言输入映射 |
+| :--- | :--- | :--- | :--- |
+| **`APD`** | Application Date 申请日 | `APD:[2018 TO 2023]`<br>`APD:[* TO 2020]`<br>`APD:[2021 TO *]`<br>`APD:2022` | “2018到2023年的专利”<br>“2020年以前/前申请的”<br>“近三年申请的”<br>“2022年当年申请的” |
+| **`PBD`** | Publication Date 公开/公告日 | `PBD:[20230101 TO 20241231]`<br>`PBD:[2024 TO *]` | “2023年以来公开的”<br>“最新公告的专利” |
+| **`PN`** | Publication Number 公开号/受理局 | `PN:(CN*)`<br>`PN:(US*)`<br>`PN:(EP*)`<br>`PN:(CN* OR US*)` | “只要中国的专利”<br>“看美国/欧洲专利”<br>“中外专利对比” |
+| **`IPC`** | International Patent Classification 分类号 | `IPC:(G06F*)`<br>`IPC:(A01K OR B65G)` | “计算机类G06F”、“物流运输B65G”、“仅看A01K领域” |
+| **`CPC`** | Cooperative Patent Classification 联合分类 | `CPC:(Y02E10/00*)` | 绿色双碳、前沿储能等细分联合分类 |
+| **`IN`** | Inventor 发明人 | `IN:(李云峰)`<br>`IN:("John Smith")` | “某某专家/某高管名下的专利” |
+| **`TAC`** | Title, Abstract, Claims 核心文本 | `TAC:(猫砂盆 OR (cat AND litter))` | 产品名、零部件、功能描述（最常用核心字段） |
+| **`TTL`** | Title 标题 | `TTL:(无人机云台)` | “标题必须带有云台的专利” |
+| **`ANCS`** | Normalized Current Assignee 标准化当前权利人 | `ANCS:("富士康工业互联网")` | 穿透控股公司树的最佳字段（含子公司） |
+| **`ANC`** | Current Assignee 当前申请人/权利人 | `ANC:("富联裕展" OR "富桂精密")` | 旗下特定研发子公司字号精确匹配 |
+| **`ANS`** | Normalized Original Assignee 标准化原始申请人 | `ANS:("富士康工业互联网")` | 溯源原始申报主体 |
+
+> 📌 **命令行布尔与通配符铁律**：
+> 1. **布尔运算符**：`AND`、`OR`、`NOT` **必须全部大写**（小写 `and` 会被当成普通词匹配导致语法错误）；
+> 2. **英文多词短语免引号**：英文词组用括号内 `AND` 代替双引号，如 `(cat AND litter)`、`(solid AND electrolyte)`，彻底规避 Shell 命令行引号转义吞食；
+> 3. **通配符规则**：仅支持在右侧使用 `*`（如 `IPC:(G06F*)`、`PN:(CN*)`），智慧芽不支持左侧通配符（如 `*B`、`*2020` 会直接报语法错误）。
+
+---
+
+### 3. 多场景自然语言需求 -> 检索式转换范例库
+
+- **范例 1（指定公司 + 时间限定：“我想看工业富联2020年以前申请的专利”）**：
+  - 拆分：`Block 0(工业富联公司树)` + `Block C(申请日 APD:[* TO 2020])`
   - 生成 `--raw-query`：
-    `TAC:((猫砂盆 OR 猫厕所 OR 宠物厕所 OR (cat AND litter) OR (pet AND toilet) OR (litter AND box)) AND (智能 OR 自动 OR 电动 OR 自清洁 OR 铲屎 OR 清理 OR smart OR intelligent OR automatic OR (self AND cleaning)))`
-- **范例 2（用户输入：“eightsleep的床垫温度调节专利，重点看水路设计”）**：
+    `(ANCS:(富士康工业互联网 OR 工业富联 OR (FOXCONN AND INDUSTRIAL AND INTERNET)) OR ANS:(富士康工业互联网 OR 工业富联 OR (FOXCONN AND INDUSTRIAL AND INTERNET)) OR ANC:(富士康工业互联网 OR 工业富联 OR 富联裕展 OR 富联精密 OR 富联科技 OR 富桂精密 OR (FOXCONN AND INDUSTRIAL AND INTERNET))) AND APD:[* TO 2020]`
+
+- **范例 2（指定时间区间 + 地域限定：“查2018-2023年之间智能猫砂盆的中国专利”）**：
+  - 拆分：`Block A(猫砂盆中英)` + `Block B(智能/清理中英)` + `Block C(APD:[2018 TO 2023])` + `Block E(PN:(CN*))`
+  - 生成 `--raw-query`：
+    `TAC:((猫砂盆 OR 猫厕所 OR 宠物厕所 OR (cat AND litter) OR (pet AND toilet) OR (litter AND box)) AND (智能 OR 自动 OR 电动 OR 自清洁 OR 铲屎 OR 清理 OR smart OR intelligent OR automatic OR (self AND cleaning))) AND APD:[2018 TO 2023] AND PN:(CN*)`
+
+- **范例 3（指定分类号 + 发明人：“查华为近三年在IPC G06F分类下发明人张三的专利”）**：
+  - 拆分：`Block 0(华为公司树)` + `Block C(近三年 APD:[2023 TO *])` + `Block D(IPC:(G06F*))` + `Block F(IN:(张三))`
+  - 生成 `--raw-query`：
+    `(ANCS:(华为 OR HUAWEI) OR ANS:(华为 OR HUAWEI) OR ANC:(华为 OR 华为技术 OR HUAWEI)) AND APD:[2023 TO *] AND IPC:(G06F*) AND IN:(张三)`
+
+- **范例 4（产品 + 关注点：“eightsleep的床垫温度调节专利，重点看水路设计”）**：
   - 拆分：`Block 0(Eight Sleep)` + `Block A(床垫/睡眠垫)` + `Block B(温控/水路/流体)`
   - 生成 `--raw-query`：
     `(ANCS:(EIGHT AND SLEEP) OR ANS:(EIGHT AND SLEEP) OR ANC:(EIGHT AND SLEEP)) AND TAC:((床垫 OR 睡眠垫 OR 床铺 OR mattress OR bed OR pad) AND (温度 OR 温控 OR 制冷 OR 加热 OR 水路 OR 流体 OR 管路 OR temperature OR thermal OR cooling OR heating OR water OR fluid OR liquid))`
-- **范例 3（用户输入：“固态电解质领域”）**：
-  - 生成 `--raw-query`：
-    `TAC:(固态电解质 OR 固体电解质 OR 全固态电池 OR 硫化物电解质 OR 氧化物电解质 OR (solid AND electrolyte) OR (all-solid-state AND battery))`
 
+---
+
+### 4. 统计数据与口径规范（严禁混淆概念）
+
+模型在向用户解读数据或编写看板说明时，**必须严格遵守以下口径规范**：
+1. **基准去重总库（Unique Patents）**：
+   - 含义：检索命中的**全球唯一专利总量**（母子公司联合申报已排重，同一专利仅计 1 件）。
+   - 地位：全景申请趋势、IPC 分布占比、全库近十年授权率及抽样分析池均以此为唯一基准。
+2. **各成员累计申报件次（Filing Counts）**：
+   - 含义：集团旗下各子公司独立申报件数的简单相加。
+   - 现象：由于集团内母子公司常作为共同权利人联合署名，各成员单列相加会产生重叠，因此**累计件次数通常会大于去重专利总量**（例如：排重 7,462 件 vs 成员累计申报 11,781 件次）。
+3. **全库主要申请人真实排名 vs 集团公司树穿透明细**：
+   - **全库 Top 10 申请人**：按专利票面上实际印制的名称频次统计（包含联合申请的上级母集团或外部合作方，如工业富联专利中常有“鸿海精密”共同署名）；
+   - **集团公司树穿透明细**：以目标企业为核心，**向下穿透其名下的控股研发/生产子公司梯队**（揭示南宁富桂、天津富联等具体研发基地）。
 ---
 
 ## 第二步：执行专利查询与生成移动端报告（含零配置自动安装 Python）

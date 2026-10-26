@@ -779,12 +779,13 @@ def render_overview_html(
     {f'<div class="hero-summary">{_esc(summary_text)}</div>' if summary_text else ''}
   </div>
 
-  <div style="background:#eef4ff;border:1px solid #adc6ff;border-radius:10px;padding:9px 12px;margin-bottom:12px;font-size:12px;color:#1d39c4;line-height:1.55;">
-    <div style="font-weight:700;margin-bottom:3px;display:flex;align-items:center;gap:4px;">
-      <span>📌 数据统计与分析口径声明</span>
+  <div style="background:#eef4ff;border:1px solid #adc6ff;border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:#1d39c4;line-height:1.6;">
+    <div style="font-weight:700;margin-bottom:4px;display:flex;align-items:center;gap:6px;font-size:13px;">
+      <span>📌 专利数据统计口径权威声明（去重专利总量 vs 成员累计件次）</span>
     </div>
-    <div>• <strong>基准去重总库（{total_count:,} 件）</strong>：当前检索式命中全球唯一专利总量（已剔除跨主体/联合申请重复件），全量趋势、IPC构成、近十年授权率及抽样池均以此为唯一基准。</div>
-    <div style="margin-top:2px;">• <strong>穿透微观分析池*（{sample_count} 件）</strong>：基于基准总库按综合权重抽样前 {sample_count} 篇进行多模态附图对齐、代表专利精选及核心团队画像分析（标 * 所示）。</div>
+    <div>• <strong>基准排重总库（{total_count:,} 件）</strong>：当前检索命中<strong>全球唯一专利总量</strong>（母子公司跨主体联合申请已排重，同一专利仅计1件），全量趋势、IPC技术分类、近十年授权率及微观抽样池均以此为唯一权威底库。</div>
+    <div style="margin-top:2px;">• <strong>成员累计申报件次</strong>：集团旗下各子公司独立申报量的非排重相加。由于母子公司间常作为共同权利人联合署名，各成员单列相加包含重叠计算，故<strong>累计件次数常大于去重专利总量</strong>。</div>
+    <div style="margin-top:2px;">• <strong>全景申请人排行 vs 公司树穿透实体</strong>：全库主要申请人 Top 10 按专利票面署名频次统计（包含联合申请的控股母集团或合作机构，如鸿海精密）；公司树卡片则<strong>向下穿透</strong>当前查询主体名下的控股研发/制造子公司梯队。</div>
   </div>
 
   <div class="kpi-grid">
@@ -803,13 +804,14 @@ def render_overview_html(
   <div id="tab-corps" class="tab-panel active" data-tab-group="main">
     <div class="card">
       <div class="card-title">
-        <span>🏢 主要申请主体（智慧芽公司树控股归并）</span>
-        <small style="font-weight:normal;color:#86909c">点击卡片展开/折叠子公司</small>
+        <span>🏢 核心申请主体矩阵（智慧芽公司树向下穿透控股研发梯队）</span>
+        <small style="font-weight:normal;color:#86909c">点击展开子公司 · 统计所属研发实体</small>
       </div>
       {"".join(corp_acc_html) if corp_acc_html else '<div style="color:#86909c">暂无集团归并数据</div>'}
     </div>
     <div class="card">
-      <div class="card-title"><span>📌 智慧芽全库主要申请人真实排名（Top 10 全量零抽样）</span></div>
+      <div class="card-title"><span>📌 智慧芽全库主要申请人真实排名（Top 10 全量零抽样 · 含联合署名主体）</span></div>
+      <div style="font-size:11.5px;color:#86909c;margin:-4px 0 8px 0;">注：按专利票面权利人署名频次统计，包含联合申请的控股母集团或外部合作机构（如鸿海精密）</div>
       <div>{"".join(raw_app_rows)}</div>
     </div>
   </div>

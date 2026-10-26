@@ -278,8 +278,16 @@ def expand_keyword_clause(kw: str) -> str:
     return w
 
 
-def build_patsnap_query(company: str = "", keyword: str = "", raw_query: str = "") -> str:
-    """根据公司名（启用智慧芽公司树 ANCS/ANS）与产品/领域关键词构造高查准、中英双语 PatSnap 检索式"""
+def build_patsnap_query(
+    company: str = "",
+    keyword: str = "",
+    raw_query: str = "",
+    date_range: str = "",
+    ipc: str = "",
+    country: str = "",
+    inventor: str = "",
+) -> str:
+    """根据公司名（启用智慧芽公司树 ANCS/ANS）、产品关键词、日期范围、分类号等多维度条件构造 PatSnap 检索式"""
     if raw_query:
         return raw_query.strip()
     parts = []
@@ -307,6 +315,23 @@ def build_patsnap_query(company: str = "", keyword: str = "", raw_query: str = "
         elif expanded_clauses:
             joined = " AND ".join(expanded_clauses)
             parts.append(f"TAC:({joined})")
+    if date_range:
+        dr = date_range.strip()
+        if not dr.startswith("[") and not dr.startswith("APD:") and not dr.startswith("PBD:"):
+            parts.append(f"APD:[{dr}]")
+        elif dr.startswith("APD:") or dr.startswith("PBD:"):
+            parts.append(dr)
+        else:
+            parts.append(f"APD:{dr}")
+    if ipc:
+        ipc_val = ipc.strip().replace("IPC:", "").strip("()")
+        parts.append(f"IPC:({ipc_val})")
+    if country:
+        ctry = country.strip().replace("PN:", "").strip("()")
+        parts.append(f"PN:({ctry})")
+    if inventor:
+        inv = inventor.strip().replace("IN:", "").strip("()")
+        parts.append(f"IN:({inv})")
     return " AND ".join(parts) if parts else "TAC:(专利)"
 
 
@@ -855,7 +880,15 @@ def cmd_overview(args: argparse.Namespace) -> None:
     if args.modules:
         modules = set(m.strip().upper() for m in args.modules.split(",") if m.strip())
 
-    query_text = build_patsnap_query(args.company, args.keyword, args.raw_query)
+    query_text = build_patsnap_query(
+        company=args.company,
+        keyword=args.keyword,
+        raw_query=args.raw_query,
+        date_range=getattr(args, "date_range", ""),
+        ipc=getattr(args, "ipc", ""),
+        country=getattr(args, "country", ""),
+        inventor=getattr(args, "inventor", ""),
+    )
     # 若激活模块 B（主要申请人与集团控股主体识别），拉取 100~200 件样本以提高行业玩家覆盖度
     first_batch_size = 100 if "B" in modules else max(args.limit * 2, 30)
 
@@ -1001,6 +1034,7 @@ def cmd_overview(args: argparse.Namespace) -> None:
 
         if grouped_corps:
             print("### 1. 主要申请主体矩阵表（按集团控股/智慧芽公司树 `ANCS/ANS` 穿透归并）")
+            print("> 💡 **口径说明**：矩阵表展示集团向下穿透的控股研发子公司（排重专利件数）；全库申请人排名按票面署名频次统计（包含联合申请的控股母集团或合作方，如鸿海精密）。")
             print("| 排名 | 集团系 (领域全口径) | 🏢 核心申请主体 (母公司) | 🔗 智慧芽公司树穿透：控股子公司 / 海外 / 关联主体 |")
             print("| :--- | :--- | :--- | :--- |")
             for idx, grp in enumerate(grouped_corps[:8], 1):
@@ -1857,6 +1891,10 @@ def main() -> None:
     p_ov.add_argument("--company", default="", help="公司/申请人名称")
     p_ov.add_argument("--keyword", default="", help="产品名或技术领域关键词")
     p_ov.add_argument("--raw-query", default="", help="自定义高级 PatSnap 检索式")
+    p_ov.add_argument("--date-range", default="", help="申请日范围限定，如 [2018 TO 2023] 或 [* TO 2020]")
+    p_ov.add_argument("--ipc", default="", help="IPC分类号限定，如 G06F* 或 A01K")
+    p_ov.add_argument("--country", default="", help="国家/地区限定，如 CN* 或 US*")
+    p_ov.add_argument("--inventor", default="", help="发明人限定，如 李云峰")
     p_ov.add_argument("--template", default="1", help="使用的模板编号或名称（默认 1）")
     p_ov.add_argument("--modules", default="", help="临时覆盖的模块列表，如 A,B,D")
     p_ov.add_argument("--extra-prompt", default="", help="临时附加的自然语言关注要求")
