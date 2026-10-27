@@ -393,6 +393,31 @@ body[data-lang-mode="orig"] .bi-cn { display: none !important; }
 .bi-tag-orig { background: #e5e6eb; color: #4e5969; }
 .para-pair { margin-bottom: 10px; }
 .para-pair:last-child { margin-bottom: 0; }
+.dp-item { margin-bottom: 12px; }
+.dp-item:last-child { margin-bottom: 0; }
+.dp-no {
+  display: inline-block;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #165dff;
+  background: #e8f3ff;
+  border-radius: 4px;
+  padding: 0 6px;
+  margin-bottom: 4px;
+}
+.dp-missing { color: #c9cdd4; font-style: italic; }
+.dp-sec {
+  margin: 14px 0 8px;
+  padding: 6px 10px;
+  background: linear-gradient(90deg, #eef3ff, #f7faff);
+  border-left: 3px solid #165dff;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #0e2f8a;
+}
+.card .acc-body .dp-sec:first-child { margin-top: 0; }
 .src-note {
   font-size: 12px;
   color: #4e5969;
@@ -510,11 +535,72 @@ def _render_bi_block(
     )
 
 
+_DESC_SECTION_SHORT = {
+    "preamble": ("📎", "相关申请／前言"),
+    "technical_field": ("🎯", "技术领域"),
+    "background": ("🧭", "背景技术"),
+    "summary": ("🚀", "发明内容"),
+    "drawing_desc": ("🖼️", "附图说明"),
+    "embodiments": ("🔧", "具体实施方式"),
+}
+
+_DESC_SECTION_LABEL = {
+    "preamble": ("📎", "相关申请／前言（中外文对照）", "相关申请／前言"),
+    "technical_field": ("🎯", "技术领域（中外文对照）", "技术领域"),
+    "background": ("🧭", "背景技术（中外文对照）", "背景技术与行业痛点"),
+    "summary": ("🚀", "发明内容与有益效果（中外文对照）", "发明内容与有益效果"),
+    "drawing_desc": ("🖼️", "附图说明（中外文对照）", "附图说明"),
+    "embodiments": ("🔧", "具体实施方式（中外文对照，点击展开/收起）", "具体实施方式（点击展开）"),
+}
+
+
+def _render_desc_pairs_html(pairs: list, is_bilingual: bool) -> str:
+    """按段号顺序逐段渲染说明书（中英左右并排），章节标题只作为分隔标签。
+
+    与按章节整块对照相比，这种渲染对"标题不规范""标题被拼到段末""机翻分段不一致"的外文专利
+    不会串行；机翻缺失的单段只提示"本条机翻缺失"，不再整块消失。
+    """
+    if not pairs:
+        return ""
+    rows = []
+    for p in pairs:
+        if p.get("heading"):
+            icon, label = _DESC_SECTION_SHORT.get(p.get("section") or "", ("📄", "说明书"))
+            rows.append(f'<div class="dp-sec">{icon} {label}</div>')
+        no_raw = p.get("no")
+        no_html = f'<div class="dp-no">[{no_raw:04d}]</div>' if isinstance(no_raw, int) else ""
+        en_html = _esc(re.sub(r"^\[\d{1,4}\]\s*", "", p.get("en") or ""))
+        cn_raw = re.sub(r"^\[\d{1,4}\]\s*", "", (p.get("cn") or "").strip())
+        if is_bilingual:
+            if cn_raw:
+                cn_html = f'<div class="bi-cn"><div class="sec-text">{_esc(cn_raw)}</div></div>'
+            else:
+                cn_html = '<div class="bi-cn"><div class="sec-text dp-missing">（本条机翻缺失）</div></div>'
+            rows.append(
+                f'<div class="dp-item">{no_html}'
+                f'<div class="bi-pair">'
+                f'{cn_html}'
+                f'<div class="bi-orig"><div class="sec-text">{en_html}</div></div>'
+                f'</div></div>'
+            )
+        else:
+            rows.append(f'<div class="dp-item">{no_html}<div class="sec-text">{en_html}</div></div>')
+    body = "".join(rows)
+    title = "📖 说明书全文（逐段中外文对照）" if is_bilingual else "📖 说明书全文（逐段）"
+    return (
+        f'<div class="card"><div class="card-title"><span>{title}</span></div>'
+        f'<div class="acc-item open">'
+        f'<div class="acc-header" onclick="toggleAcc(this)">'
+        f'<div class="acc-title">点击展开/收起【说明书全文】共 {len(pairs)} 段（按段号对齐，一左一右为一对）</div>'
+        f'<span class="acc-arrow">▼</span></div>'
+        f'<div class="acc-body">{body}</div></div></div>'
+    )
+
+
 def build_translation_segments(
     pn: str,
     title_str: str,
-    abstract_str: str,
-    parsed_clms: dict,
+    abstract_str: str,parsed_clms: dict,
 ) -> list:
     """导出待模型翻译的片段（标题 / 摘要 / 独立权利要求 / 从属权利要求）
 
@@ -1055,6 +1141,35 @@ def render_detail_html(
     emb_orig = ((parsed_desc or {}).get("embodiments") or "暂无具体实施方式")[:8000]
     emb_cn = (desc_cn_map.get("embodiments") or "")[:8000]
 
+    # 优先用「按段号逐段对齐」的说明书数据（对标题不规范 / 机翻分段不一致的专利才靠得住）
+    desc_pairs = (parsed_desc or {}).get("pairs") or []
+    desc_body_html = _render_desc_pairs_html(desc_pairs, is_bilingual)
+
+    # 兜底：无段号数据时退回原来的「按章节整块对照」
+    _title_bg = "技术领域与背景技术（中外文对照）" if is_bilingual else "背景技术与行业痛点"
+    _title_sum = "发明内容与有益效果（中外文对照）" if is_bilingual else "发明内容与有益效果"
+    _title_emb = ("具体实施方式（中外文对照，点击展开/收起）" if is_bilingual
+                  else "具体实施方式（全文折叠保护，点击展开）")
+    desc_fallback_html = (
+        '<div class="card">'
+        f'<div class="card-title"><span>🎯 {_title_bg}</span></div>'
+        f'{_render_bi_block(full_bg_cn, full_bg_orig, is_bilingual)}'
+        '</div>'
+        '<div class="card">'
+        f'<div class="card-title"><span>🚀 {_title_sum}</span></div>'
+        f'{_render_bi_block(sum_cn, sum_orig, is_bilingual)}'
+        '</div>'
+        '<div class="card">'
+        f'<div class="card-title"><span>🔧 {_title_emb}</span></div>'
+        '<div class="acc-item open">'
+        '<div class="acc-header" onclick="toggleAcc(this)">'
+        '<div class="acc-title">点击展开/收起【具体实施方式】段落</div>'
+        '<span class="acc-arrow">▼</span>'
+        '</div>'
+        f'<div class="acc-body">{_render_bi_block(emb_cn, emb_orig, is_bilingual)}</div>'
+        '</div></div>'
+    )
+
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -1122,24 +1237,7 @@ def render_detail_html(
 
   <div id="tab-desc" class="tab-panel" data-tab-group="dt">
     {note_desc_html}
-    <div class="card">
-      <div class="card-title"><span>🎯 {'技术领域与背景技术（中外文对照）' if is_bilingual else '背景技术与行业痛点'}</span></div>
-      {_render_bi_block(full_bg_cn, full_bg_orig, is_bilingual)}
-    </div>
-    <div class="card">
-      <div class="card-title"><span>🚀 {'发明内容与有益效果（中外文对照）' if is_bilingual else '发明内容与有益效果'}</span></div>
-      {_render_bi_block(sum_cn, sum_orig, is_bilingual)}
-    </div>
-    <div class="card">
-      <div class="card-title"><span>🔧 {'具体实施方式（中外文对照，点击展开/收起）' if is_bilingual else '具体实施方式（全文折叠保护，点击展开）'}</span></div>
-      <div class="acc-item open">
-        <div class="acc-header" onclick="toggleAcc(this)">
-          <div class="acc-title">点击展开/收起【具体实施方式】段落</div>
-          <span class="acc-arrow">▼</span>
-        </div>
-        <div class="acc-body">{_render_bi_block(emb_cn, emb_orig, is_bilingual)}</div>
-      </div>
-    </div>
+    {desc_body_html or desc_fallback_html}
   </div>
 </div>
 

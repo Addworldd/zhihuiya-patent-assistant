@@ -161,6 +161,9 @@ def clean_html_text(raw_html: str) -> str:
     text = re.sub(r'<b\s+class="d_n"\s*>\s*(\[\d+\])\s*</b>', r"\n\1 ", text)
     text = re.sub(r"<[^>]+>", "", text)
     text = html.unescape(text)
+    # 机翻正文里常把标签二次转义（&lt;b class="d_n"&gt;），unescape 后才会现形 → 再清一遍
+    text = re.sub(r"<[^>]+>", "", text)
+    text = text.replace("\xa0", " ")
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     return "\n".join(lines)
 
@@ -677,6 +680,147 @@ def is_non_chinese_text(text: str) -> bool:
     if alpha_num_cjk == 0:
         return False
     return (cjk_count / alpha_num_cjk) < 0.2
+
+
+_PARA_MARK_RE = re.compile(r"\[0*(\d{1,4})\]")
+
+# 说明书中外文逐段对齐用：章节标题关键词（中英双语，允许出现在段号之后而非行首）
+_DESC_HEADING_KEYWORDS = [
+    ("technical_field", ("TECHNICAL FIELD", "FIELD OF THE INVENTION", "FIELD OF INVENTION", "发明领域", "技术领域")),
+    ("background", ("BACKGROUND OF THE INVENTION", "BACKGROUND ART", "BACKGROUND", "背景技术", "发明背景", "背景")),
+    ("summary", ("SUMMARY OF THE INVENTION", "SUMMARY OF THE DISCLOSURE", "SUMMARY",
+                 "发明内容", "发明概述", "发明摘要", "实用新型内容")),
+    ("drawing_desc", ("BRIEF DESCRIPTION OF THE DRAWINGS", "BRIEF DESCRIPTION OF DRAWINGS",
+                      "DESCRIPTION OF THE DRAWINGS", "附图说明", "附图简述", "附图简要说明")),
+    ("embodiments", ("DETAILED DESCRIPTION", "DESCRIPTION OF EMBODIMENTS", "EMBODIMENTS",
+                     "具体实施方式", "实施例", "发明详述", "详细描述")),
+]
+
+
+def split_numbered_paragraphs(text: str) -> dict:
+    """把带 [00xx] 段号的说明书切成分段字典 {段号 int: 段文本}（机翻重复段号只保留首个）"""
+    if not text:
+        return {}
+    marks = list(_PARA_MARK_RE.finditer(text))
+    if not marks:
+        return {}
+    out = {}
+    for i, m in enumerate(marks):
+        no = int(m.group(1))
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        seg = text[m.start():end].strip()
+        if no not in out:
+            out[no] = seg
+    return out
+
+
+def _detect_heading_in_paragraph(body: str) -> tuple:
+    """判断一个说明书段是否「自带章节标题」，返回 ("start"|"end"|None, 章节 key|None)。
+
+    外文专利（尤其美国老案）的标题常写成 "[0002] 1. The Field of the Invention"（行首），
+    有的则被拼到上一段末尾（"…different colors.\\nBRIEF DESCRIPTION OF THE DRAWINGS"），
+    所以首行和末行都要看。
+    """
+    if not body:
+        return None, None
+    lines = [ln.strip() for ln in body.split("\n") if ln.strip()]
+    if not lines:
+        return None, None
+
+    def _match(line: str):
+        if len(line) > 120:
+            return None
+        up = line.upper()
+        stripped = re.sub(r"^[\s\d.、:：)）\-—]+", "", up)
+        for key, kws in _DESC_HEADING_KEYWORDS:
+            for kw in kws:
+                if stripped.startswith(kw) or (kw in up and len(line) <= 60):
+                    return key
+        return None
+
+    key = _match(lines[0])
+    if key:
+        return "start", key
+    if len(lines) > 1:
+        key = _match(lines[-1])
+        if key:
+            return "end", key
+    return None, None
+
+
+_CN_TAIL_HEADING_RE = re.compile(
+    r"[\s\u3000。；;,，]\s*(?:技术领域|发明领域|背景技术|发明背景|背景|发明内容|发明概述|发明摘要|"
+    r"附图说明|附图简述|具体实施方式|实施例|发明详述|详细描述)\s*$"
+)
+
+
+def _strip_tail_heading(text: str) -> str:
+    """机翻常把下一章节标题拼到上一段末尾（"…并入本文。 背景"），这里只剥掉这种尾巴"""
+    if not text:
+        return text
+    cleaned = _CN_TAIL_HEADING_RE.sub("", text).strip()
+    return cleaned if len(cleaned) > 20 else text
+
+
+def build_desc_paragraph_pairs(desc_text: str, desc_text_cn: str) -> list:
+    """按 [00xx] 段号把中外文说明书逐段对齐（章节标题只作辅助标记，不用于切分配对）。
+
+    修复背景（2026-10-27）：原先中外文各自按「行首关键词」切章节（parse_description_and_figures），
+    遇到标题写成 "[0002] 1. The Field of the Invention" 这类带段号/序号的外文专利、或标题被拼在
+    上一段末尾、机翻把标题译成"一、发明领域"时，两边切点完全不同，按章节配对会把不相干的段落
+    摆在一起（中文栏显示全文、英文栏只有相关申请，甚至中文栏整块为空）。段号在两份文本里天然
+    一致，用它对齐是唯一可靠的做法。
+
+    返回：[{"no": int, "section": str, "heading": bool, "en": str, "cn": str}, ...]，按段号升序。
+    """
+    en_map = split_numbered_paragraphs(clean_html_text(desc_text or ""))
+    if not en_map:
+        return []
+    cn_map = split_numbered_paragraphs(clean_html_text(desc_text_cn or ""))
+    pairs = []
+    current = "preamble"
+    pending = None  # 上一段末尾出现的标题，归给下一段
+    for no in sorted(en_map):
+        en_seg = en_map[no]
+        body = _PARA_MARK_RE.sub("", en_seg, count=1).strip()
+        heading = False
+        if pending:
+            current, heading, pending = pending, True, None
+        pos, key = _detect_heading_in_paragraph(body)
+        if pos == "start":
+            current, heading = key, True
+        elif pos == "end":
+            pending = key
+        pairs.append({
+            "no": no,
+            "section": current,
+            "heading": heading,
+            "en": en_seg,
+            "cn": _strip_tail_heading(cn_map.get(no, "")),
+        })
+    return pairs
+
+
+def _fmt_pairs_block(desc_pairs: list, sections: set, max_paras: int = 3, max_chars: int = 900) -> str:
+    """把「按段号对齐」的说明书段落格式化为聊天用的逐段中外对照块"""
+    rows, used = [], 0
+    for p in desc_pairs or []:
+        if p.get("section") not in sections:
+            continue
+        cn = re.sub(r"^\[\d{1,4}\]\s*", "", (p.get("cn") or "").strip())
+        en = re.sub(r"^\[\d{1,4}\]\s*", "", (p.get("en") or "").strip())
+        if not cn and not en:
+            continue
+        no = p.get("no")
+        tag = f"[{no:04d}]" if isinstance(no, int) else ""
+        line = f"- **{tag}** 🇨🇳 {cn or '（机翻缺失）'}\n  🌐 {en}"
+        if rows and used + len(line) > max_chars:
+            break
+        rows.append(line)
+        used += len(line)
+        if len(rows) >= max_paras:
+            break
+    return "\n".join(rows) if rows else "- *该章节未识别到段落*"
 
 
 def extract_fig_captions_from_text(drawing_desc_text: str) -> list:
@@ -1440,11 +1584,16 @@ def cmd_detail(args: argparse.Namespace) -> None:
     parsed_desc = parse_description_and_figures(raw_desc_html, ft_images)
 
     parsed_desc_cn = {}
+    raw_desc_cn = ""
     desc_tr = results_map.get("description_translated", {})
     if desc_tr.get("success") and desc_tr.get("data"):
         raw_desc_cn = desc_tr["data"][0].get("description", "")
         if raw_desc_cn:
             parsed_desc_cn = parse_description_and_figures(raw_desc_cn, [])
+
+    # 中外文逐段对齐（按 [00xx] 段号）：章节式切分在中英切点不一致时会把两栏拼错，段号对齐是兜底真理
+    desc_pairs = build_desc_paragraph_pairs(clean_html_text(raw_desc_html), raw_desc_cn)
+    parsed_desc["pairs"] = desc_pairs
 
     # 判断是否为非中文专利（标题、摘要、权利要求或说明书任一核心部分为外文）
     is_bilingual = (
@@ -1541,7 +1690,10 @@ def cmd_detail(args: argparse.Namespace) -> None:
     if any(m in modules for m in ["E", "F", "G", "H"]):
         if "E" in modules:
             print("## [模块 E] 说明书关键段落：技术领域与背景技术（痛点）" + (" [中外文对照]" if is_bilingual else ""))
-            if is_bilingual and (parsed_desc_cn.get("technical_field") or parsed_desc_cn.get("background")):
+            if is_bilingual and desc_pairs:
+                print(f"**【技术领域 · 中外文逐段对照】**\n{_fmt_pairs_block(desc_pairs, {'preamble', 'technical_field'})}\n")
+                print(f"**【背景技术 · 中外文逐段对照】**\n{_fmt_pairs_block(desc_pairs, {'background'}, max_paras=3, max_chars=1500)}\n")
+            elif is_bilingual and (parsed_desc_cn.get("technical_field") or parsed_desc_cn.get("background")):
                 if parsed_desc_cn.get("technical_field") or parsed_desc.get("technical_field"):
                     print(f"**【技术领域 · 🇨🇳 中文译文】**\n{parsed_desc_cn.get('technical_field', '')}\n")
                     print(f"**【技术领域 · 🌐 外文原文】**\n{parsed_desc.get('technical_field', '')}\n")
@@ -1554,7 +1706,9 @@ def cmd_detail(args: argparse.Namespace) -> None:
 
         if "F" in modules:
             print("## [模块 F] 说明书关键段落：发明内容与有益效果" + (" [中外文对照]" if is_bilingual else ""))
-            if is_bilingual and parsed_desc_cn.get("summary"):
+            if is_bilingual and desc_pairs:
+                print(f"**【发明内容 · 中外文逐段对照】**\n{_fmt_pairs_block(desc_pairs, {'summary'}, max_paras=3, max_chars=1800)}\n")
+            elif is_bilingual and parsed_desc_cn.get("summary"):
                 print(f"**【发明内容 · 🇨🇳 中文译文】**\n{parsed_desc_cn['summary'][:2500]}\n")
                 print(f"**【发明内容 · 🌐 外文原文】**\n{parsed_desc['summary'][:2500]}\n")
             else:
@@ -1562,7 +1716,9 @@ def cmd_detail(args: argparse.Namespace) -> None:
 
         if "G" in modules:
             print("## [模块 G] 说明书关键段落：具体实施方式摘录" + (" [中外文对照]" if is_bilingual else ""))
-            if is_bilingual and parsed_desc_cn.get("embodiments"):
+            if is_bilingual and desc_pairs:
+                print(f"**【具体实施方式 · 中外文逐段对照】**\n{_fmt_pairs_block(desc_pairs, {'embodiments'}, max_paras=2, max_chars=1800)}\n")
+            elif is_bilingual and parsed_desc_cn.get("embodiments"):
                 print(f"**【具体实施方式 · 🇨🇳 中文译文】**\n{parsed_desc_cn['embodiments'][:2800]}\n")
                 print(f"**【具体实施方式 · 🌐 外文原文】**\n{parsed_desc['embodiments'][:2800]}\n")
             else:
@@ -1570,9 +1726,10 @@ def cmd_detail(args: argparse.Namespace) -> None:
 
         if "H" in modules:
             print("## [模块 H] 附图说明与全文高清附图配对直出" + (" [中外文对照]" if is_bilingual else ""))
-            if is_bilingual and parsed_desc_cn.get("drawing_desc"):
+            if is_bilingual and desc_pairs:
+                print(f"**【附图说明 · 中外文逐段对照】**\n{_fmt_pairs_block(desc_pairs, {'drawing_desc'}, max_paras=2, max_chars=1200)}\n")
+            elif is_bilingual and parsed_desc_cn.get("drawing_desc"):
                 print(f"**【附图说明 · 🇨🇳 中文译文】**\n{parsed_desc_cn['drawing_desc'][:1200]}\n")
-            if parsed_desc["drawing_desc"]:
                 print(f"**【附图说明 · 原文】**\n{parsed_desc['drawing_desc'][:1200]}\n")
             figs = parsed_desc["paired_figures"][: args.max_images]
             if figs:
